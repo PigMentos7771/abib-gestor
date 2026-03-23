@@ -2671,10 +2671,23 @@ function abrirModalEditFunc(idFunc) {
             document.getElementById('edit-func-prazo-prorrog').value = prazoExp.diasProrrogadosManuais || '';
             document.getElementById('edit-col-prorrog').classList.toggle('hidden', !(prazoExp.prorrogado || false));
         } else {
-            editAreaExp.classList.add('hidden'); // Ex: ja efetivou ou deletaram manual
+            // prazo órfão (deletado) — trata igual a efetivado
+            editAreaExp.classList.add('hidden');
+            const cwo = document.getElementById('edit-converter-exp-wrap');
+            const aeo = document.getElementById('edit-ativar-exp');
+            if (cwo && !func.desligado) { cwo.classList.remove('hidden'); if (aeo) aeo.checked = false; }
         }
     } else {
         editAreaExp.classList.add('hidden');
+        const cw = document.getElementById('edit-converter-exp-wrap');
+        const ae = document.getElementById('edit-ativar-exp');
+        if (cw && !func.desligado) { cw.classList.remove('hidden'); if (ae) ae.checked = false; }
+        else if (cw) { cw.classList.add('hidden'); }
+    }
+    const cwx = document.getElementById('edit-converter-exp-wrap');
+    if (cwx && func.idPrazoVinculado) {
+        const pv = prazosList.find(function(p){ return p.id === func.idPrazoVinculado && p.tipoCod === 'experiencia'; });
+        if (pv) cwx.classList.add('hidden');
     }
 
     document.getElementById('modal-editar-func').classList.remove('hidden');
@@ -2684,6 +2697,10 @@ function abrirModalEditFunc(idFunc) {
 function fecharModalEditFunc() {
     document.getElementById('modal-editar-func').classList.add('hidden');
     document.body.style.overflow = '';
+}
+function editToggleConverterExp(ativar) {
+    const area = document.getElementById('edit-area-exp');
+    if (area) { if (ativar) area.classList.remove('hidden'); else area.classList.add('hidden'); }
 }
 
 function salvarEdicaoFuncionario(e) {
@@ -2707,6 +2724,25 @@ function salvarEdicaoFuncionario(e) {
     funcionariosList[funcIndex].unidade = novaUnidade;
     funcionariosList[funcIndex].admissao = novaAdmissao;
     funcionariosList[funcIndex].dataNascimento = document.getElementById('edit-func-nascimento').value || null;
+
+    // Conversão efetivado → experiência
+    const _ativarExpCk = document.getElementById('edit-ativar-exp');
+    const _prazoValido = funcionariosList[funcIndex].idPrazoVinculado &&
+        prazosList.find(function(p){ return p.id === funcionariosList[funcIndex].idPrazoVinculado && p.tipoCod === 'experiencia'; });
+    if (_ativarExpCk && _ativarExpCk.checked && !_prazoValido) {
+        const _pIni = parseInt(document.getElementById('edit-func-prazo-ini').value) || 45;
+        const _isPr = document.getElementById('edit-func-is-prorrog').checked;
+        let _dPr    = parseInt(document.getElementById('edit-func-prazo-prorrog').value);
+        if (isNaN(_dPr)) _dPr = null;
+        const _nid  = 'EXP_' + Date.now();
+        let _titulo, _dvenc;
+        if (_isPr) { const _da = _dPr || (90-_pIni); _titulo = 'Experiência(Prorrogação '+_pIni+' + '+_da+'d) - '+novaUnidade+' '; _dvenc = moment(novaAdmissao).add(_pIni+_da-1,'days').format('YYYY-MM-DD'); }
+        else       { _titulo = 'Experiência('+_pIni+'d) - '+novaUnidade+' '; _dvenc = moment(novaAdmissao).add(_pIni-1,'days').format('YYYY-MM-DD'); }
+        prazosList.push({ id:_nid, nome:novoNome, tipoCod:'experiencia', dataBase:novaAdmissao, prazoInicial:_pIni, prorrogado:_isPr, diasProrrogadosManuais:_dPr, tipo:_titulo, dataVencimento:_dvenc });
+        funcionariosList[funcIndex].idPrazoVinculado = _nid;
+        registrarHistorico('funcionario','Contrato convertido para Experiência: '+novoNome,'Prazo: '+_pIni+'d — vence em '+moment(_dvenc).format('DD/MM/YYYY'),funcionariosList[funcIndex].idFunc);
+        showToast('Contrato convertido para Experiência!', 'success');
+    }
 
     // Agora sincroniza Prazos que estão atrelados!
     let prazoSincronizado = false;
@@ -10585,1022 +10621,582 @@ function mapaReorganizarTodos() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//   AGENTE COMANDANTE POR VOZ
-//   Arquitetura: STT (Web Speech API) → Gemini (payload leve) →
-//   Match fuzzy local → Confirmação por voz → Execução
+//   AGENTE COMANDANTE POR VOZ — com Histórico Persistente
 // ═══════════════════════════════════════════════════════════════════
 
-// ── Estado interno do agente ──
+// ── Estado interno ──
 const _agente = {
-    estado: 'idle',          // idle | gravando | processando | confirmando
-    recognition: null,       // instância SpeechRecognition
-    silenceTimer: null,      // timer para auto-envio após 3s de silêncio
-    textoFinal: '',          // transcrição confirmada (join de frasesConfirmadas)
-    textoParcial: '',        // transcrição interim da sessão atual
-    frasesConfirmadas: [],   // array de frases finalizadas entre reinícios do recognizer
-    vozSelecionada: null,    // objeto SpeechSynthesisVoice escolhido pelo usuário
-    pendingAction: null,     // objeto JSON da ação aguardando confirmação
+    estado: 'idle',
+    recognition: null,
+    silenceTimer: null,
+    textoFinal: '',
+    textoParcial: '',
+    frasesConfirmadas: [],
+    vozSelecionada: null,
+    pendingAction: null,
+    suportado: false,
     synth: window.speechSynthesis,
-    suportado: false,        // Web Speech API disponível?
 };
 
-// ── Dicionário de correções STT ──
-// Corrige erros fonéticos comuns do Web Speech API em pt-BR
-// especialmente para termos do domínio de RH/DP que o modelo confunde
-function _agenteCorrigirSTT(texto) {
-    if (!texto) return texto;
+// ── Histórico do agente ──
+// Estrutura Firebase: /agente_historico/entradas[] + /agente_historico/sumario
+const _agenteHist = {
+    entradas: [],      // array completo em memória
+    sumario: '',       // texto comprimido das entradas antigas
+    carregado: false,
+    FIREBASE_KEY: 'agente_historico',
+    MAX_COMPLETAS: 20, // últimas N entradas injetadas completas no prompt
+};
 
-    // Normaliza: lowercase para matching, preserva original capitalizado depois
-    let t = texto;
-
-    const correcoes = [
-        // Termos de RH confundidos foneticamente
-        [/de miss[aã]o/gi,          'demissão'],
-        [/de miss[oõ]es/gi,         'demissões'],
-        [/admiss[aã]o/gi,           'admissão'],   // às vezes vira "at miss~"
-        [/at\s*miss[aã]o/gi,        'admissão'],
-        [/a miss[aã]o/gi,           'admissão'],
-        [/A\.?S\.?O\.?/g,           'ASO'],
-        [/a\s*s\s*o/gi,             'ASO'],
-        [/exame\s+a\s*s\s*o/gi,     'exame ASO'],
-        [/feri[aa]s/gi,             'férias'],
-        [/rescis[aã]o/gi,           'rescisão'],
-        [/rescis[oõ]es/gi,          'rescisões'],
-        [/pend[êe]ncia/gi,          'pendência'],
-        [/pend[êe]ncias/gi,         'pendências'],
-        [/funcion[aá]rio/gi,        'funcionário'],
-        [/funcion[aá]rios/gi,       'funcionários'],
-        [/contra[ct]o/gi,           'contrato'],
-        [/pra[zs]o/gi,              'prazo'],
-        [/pra[zs]os/gi,             'prazos'],
-        [/urj[êe]nte/gi,            'urgente'],
-        [/urj[êe]ntes/gi,           'urgentes'],
-        [/m[ée]dia/gi,              'média'],
-        [/m[ée]dio/gi,              'médio'],
-        [/vencimento/gi,            'vencimento'],
-        [/vencimentos/gi,           'vencimentos'],
-        [/cat[êe]goria/gi,          'categoria'],
-        [/prioridade/gi,            'prioridade'],
-
-        // Palavras curtas que o STT frequentemente trunca ou confunde
-        [/com(?=\s+(?:o|a|os|as|um|uma))/gi, 'como'],  // "com o" → "como" quando seguido de artigo
-        [/para/gi,                  'para'],
-        [/de(?=\s+\w{5,})/gi,      function(m, offset, str) {
-            // Heurística: "de [palavra longa]" provavelmente está correto — não muda
-            return m;
-        }],
-
-        // Unidades que podem ser mal pronunciadas
-        [/curv[eê]lo/gi,            'CURVELO'],
-        [/barba[sc]ena/gi,          'BARBACENA'],
-        [/montes\s+claros/gi,       'MONTES CLAROS'],
-        [/janu[aá]ria/gi,           'JANUÁRIA'],
-        [/jan[aá]uba/gi,            'JANAÚBA'],
-        [/paracat[uú]/gi,           'PARACATU'],
-        [/pirapora/gi,              'PIRAPORA'],
-        [/itabira/gi,               'ITABIRA'],
-        [/leop[oo]ldina/gi,         'LEOPOLDINA'],
-        [/caratinga/gi,             'CARATINGA'],
-        [/unaí/gi,                  'UNAÍ'],
-        [/unai/gi,                  'UNAÍ'],
-        [/ub[aá]/gi,                'UBÁ'],
-        [/congonhas/gi,             'CONGONHAS'],
-        [/curvelo/gi,               'CURVELO'],
-
-        // Expressões de tempo comuns
-        [/hoje/gi,                  'hoje'],
-        [/amanh[aã]/gi,             'amanhã'],
-        [/semana/gi,                'semana'],
-        [/sext[ao]/gi,              'sexta'],
-        [/quint[ao]/gi,             'quinta'],
-        [/ter[cç][ao]/gi,           'terça'],
-
-        // Números por extenso → dígitos (útil para datas)
-        [/um(?=\s*(?:dia|mês|ano|semana))/gi,   '1'],
-        [/dois(?=\s*(?:dias|meses|anos|semanas))/gi, '2'],
-        [/tr[eê]s(?=\s*(?:dias|meses|anos|semanas))/gi, '3'],
-        [/sete(?=\s*(?:dias|meses|anos|semanas))/gi, '7'],
-        [/dez(?=\s*(?:dias|meses|anos|semanas))/gi, '10'],
-        [/quinze(?=\s*(?:dias|meses|anos|semanas))/gi, '15'],
-        [/trinta(?=\s*(?:dias|meses|anos|semanas))/gi, '30'],
-    ];
-
-    correcoes.forEach(function(par) {
-        if (typeof par[1] === 'function') {
-            t = t.replace(par[0], par[1]);
-        } else {
-            t = t.replace(par[0], par[1]);
+// ── Carregar histórico do Firebase ──
+async function _agenteHistCarregar() {
+    try {
+        const res = await fetch(FIREBASE_URL + _agenteHist.FIREBASE_KEY + '.json');
+        if (res.ok) {
+            const data = await res.json();
+            if (data) {
+                _agenteHist.entradas = data.entradas || [];
+                _agenteHist.sumario  = data.sumario  || '';
+            }
         }
-    });
-
-    // Remove espaços duplos gerados pelas substituições
-    t = t.replace(/\s{2,}/g, ' ').trim();
-
-    return t;
+    } catch(e) { console.warn('[Agente Hist] Falha ao carregar:', e); }
+    _agenteHist.carregado = true;
 }
 
-// ── Inicialização (chamada no DOMContentLoaded após fetchDadosNuvem) ──
+// ── Salvar histórico no Firebase ──
+async function _agenteHistSalvar() {
+    try {
+        await fetch(FIREBASE_URL + _agenteHist.FIREBASE_KEY + '.json', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                entradas: _agenteHist.entradas,
+                sumario:  _agenteHist.sumario
+            })
+        });
+    } catch(e) { console.warn('[Agente Hist] Falha ao salvar:', e); }
+}
+
+// ── Registrar nova entrada no histórico ──
+function _agenteHistRegistrar(tipo, comando, resultado, acao) {
+    const entrada = {
+        ts:        moment().format('YYYY-MM-DD HH:mm'),
+        tipo:      tipo,      // 'acao' | 'consulta' | 'conversa'
+        comando:   comando,
+        resultado: resultado,
+        acao:      acao || null
+    };
+    _agenteHist.entradas.push(entrada);
+
+    // Se passou de MAX_COMPLETAS, comprime as mais antigas no sumário
+    if (_agenteHist.entradas.length > _agenteHist.MAX_COMPLETAS + 10) {
+        const antigas = _agenteHist.entradas.splice(0, 10);
+        const linhas  = antigas.map(function(e) {
+            return '[' + e.ts + '] ' + e.tipo.toUpperCase() + ': ' + e.comando + ' → ' + e.resultado;
+        }).join('\n');
+        _agenteHist.sumario = (_agenteHist.sumario ? _agenteHist.sumario + '\n' : '') + linhas;
+    }
+
+    _agenteHistSalvar();
+}
+
+// ── Montar bloco de histórico para o prompt ──
+function _agenteHistMontarBloco() {
+    if (!_agenteHist.carregado || (_agenteHist.entradas.length === 0 && !_agenteHist.sumario)) {
+        return '';
+    }
+
+    let bloco = '\n\nHISTÓRICO DO AGENTE (use para responder perguntas sobre o passado):';
+
+    if (_agenteHist.sumario) {
+        bloco += '\n[SUMÁRIO COMPRIMIDO - entradas antigas]\n' + _agenteHist.sumario;
+    }
+
+    if (_agenteHist.entradas.length > 0) {
+        const recentes = _agenteHist.entradas.slice(-_agenteHist.MAX_COMPLETAS);
+        bloco += '\n[ÚLTIMAS ' + recentes.length + ' INTERAÇÕES - completas]\n';
+        bloco += recentes.map(function(e) {
+            return '[' + e.ts + '] ' + e.tipo.toUpperCase() + ': "' + e.comando + '" → ' + e.resultado;
+        }).join('\n');
+    }
+
+    return bloco;
+}
+
+// ── Inicialização ──
 function agenteInit() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-        console.warn('[Agente] Web Speech API não suportada neste navegador.');
         const btn = document.getElementById('agente-btn');
-        if (btn) {
-            btn.title = 'Reconhecimento de voz não suportado neste navegador';
-            btn.style.opacity = '0.4';
-            btn.style.cursor = 'not-allowed';
-        }
+        if (btn) { btn.style.opacity = '0.4'; btn.style.cursor = 'not-allowed'; btn.title = 'Voz não suportada (use Chrome)'; }
         return;
     }
-
     _agente.suportado = true;
 
-    // Carrega vozes disponíveis e popula o seletor no painel
-    // speechSynthesis.getVoices() pode retornar [] na primeira chamada
-    // — precisa aguardar o evento 'voiceschanged'
-    function _agentePopularVozes() {
+    // Carrega histórico em background
+    _agenteHistCarregar();
+
+    // Vozes TTS
+    function _popVozes() {
         const vozes = window.speechSynthesis.getVoices();
-        const sel = document.getElementById('agente-voz-select');
+        const sel   = document.getElementById('agente-voz-select');
         if (!sel || vozes.length === 0) return;
-
-        // Filtra vozes pt-BR primeiro, depois pt genérico, depois todas
-        const ptBR  = vozes.filter(function(v) { return v.lang === 'pt-BR'; });
-        const pt    = vozes.filter(function(v) { return v.lang.startsWith('pt') && v.lang !== 'pt-BR'; });
-        const outras = vozes.filter(function(v) { return !v.lang.startsWith('pt'); });
-        const ordenadas = ptBR.concat(pt).concat(outras);
-
+        const ptBR  = vozes.filter(function(v){ return v.lang === 'pt-BR'; });
+        const pt    = vozes.filter(function(v){ return v.lang.startsWith('pt') && v.lang !== 'pt-BR'; });
+        const outras= vozes.filter(function(v){ return !v.lang.startsWith('pt'); });
         sel.innerHTML = '<option value="">Padrão do sistema</option>';
-        ordenadas.forEach(function(v, i) {
-            const opt = document.createElement('option');
-            opt.value = v.name;
-            opt.textContent = v.name + (v.lang ? ' (' + v.lang + ')' : '') + (v.localService ? ' ★' : '');
-            sel.appendChild(opt);
+        ptBR.concat(pt).concat(outras).forEach(function(v) {
+            const o = document.createElement('option');
+            o.value = v.name;
+            o.textContent = v.name + (v.lang ? ' ('+v.lang+')' : '') + (v.localService ? ' ★' : '');
+            sel.appendChild(o);
         });
-
-        // Tenta pré-selecionar "Google português" se disponível
-        const googlePtBR = ptBR.find(function(v) {
-            return v.name.toLowerCase().includes('google');
-        });
-        if (googlePtBR) {
-            sel.value = googlePtBR.name;
-            _agente.vozSelecionada = googlePtBR;
-        }
+        const gPt = ptBR.find(function(v){ return v.name.toLowerCase().includes('google'); });
+        if (gPt) { sel.value = gPt.name; _agente.vozSelecionada = gPt; }
     }
+    window.speechSynthesis.onvoiceschanged = _popVozes;
+    _popVozes();
 
-    // Evento disparado quando vozes carregam (necessário no Chrome)
-    window.speechSynthesis.onvoiceschanged = _agentePopularVozes;
-    // Tenta carregar imediatamente (funciona em Firefox e Safari)
-    _agentePopularVozes();
-
+    // STT
     const rec = new SpeechRecognition();
     rec.lang = 'pt-BR';
-    rec.interimResults = true;   // resultados parciais para feedback visual
-    rec.continuous = false;      // modo single-shot: evita duplicação de resultados
-    rec.maxAlternatives = 1;     // no modo single-shot, continuous:false + restart manual
-                                 // é mais confiável que continuous:true no Chrome/Android
+    rec.interimResults = true;
+    rec.continuous = false;
+    rec.maxAlternatives = 1;
 
-    // Resultado parcial ou final chegando
     rec.onresult = function(event) {
-        // IMPORTANTE: no modo single-shot, cada sessão começa do índice 0.
-        // Usamos _agente.frasesConfirmadas[] para acumular frases entre sessões.
-        // _agente.textoParcial contém APENAS o interim da sessão atual.
-        // Assim, reiniciar o recognizer nunca causa acumulação duplicada.
-
-        let parcialSessaoAtual = '';
-        let finalSessaoAtual = '';
-
+        let parcial = '', final = '';
         for (let i = 0; i < event.results.length; i++) {
-            const texto = event.results[i][0].transcript;
-            if (event.results[i].isFinal) {
-                finalSessaoAtual += texto + ' ';
-            } else {
-                parcialSessaoAtual += texto;
-            }
+            const txt = event.results[i][0].transcript;
+            if (event.results[i].isFinal) { final += txt + ' '; }
+            else { parcial += txt; }
         }
-
-        if (finalSessaoAtual.trim()) {
-            // Adiciona a frase confirmada ao array — nunca re-adiciona
-            _agente.frasesConfirmadas.push(finalSessaoAtual.trim());
-            _agente.textoParcial = '';
-            // Reconstrói textoFinal a partir do array limpo
-            _agente.textoFinal = _agente.frasesConfirmadas.join(' ');
-        } else {
-            // Interim: mostra o parcial da sessão atual (não acumula com frases anteriores)
-            _agente.textoParcial = parcialSessaoAtual;
-        }
-
+        if (final.trim()) { _agente.frasesConfirmadas.push(final.trim()); _agente.textoParcial = ''; _agente.textoFinal = _agente.frasesConfirmadas.join(' '); }
+        else { _agente.textoParcial = parcial; }
         _agenteAtualizarTranscricao();
         _agenteResetSilenceTimer();
     };
 
     rec.onerror = function(event) {
-        // 'no-speech' é normal no modo single-shot — apenas reinicia
-        if (event.error === 'no-speech') {
-            if (_agente.estado === 'gravando') {
-                try { rec.start(); } catch(e) {}
-            }
-            return;
-        }
-        // 'aborted' acontece quando paramos manualmente — ignorar
+        if (event.error === 'no-speech') { if (_agente.estado === 'gravando') { try { rec.start(); } catch(e){} } return; }
         if (event.error === 'aborted') return;
-        console.error('[Agente] Erro STT:', event.error);
         _agenteDefinirEstado('idle');
         showToast('Erro no reconhecimento de voz: ' + event.error, 'error');
     };
 
     rec.onend = function() {
-        // No modo single-shot, 'end' dispara após cada frase reconhecida.
-        // Reinicia automaticamente para manter a escuta contínua.
-        if (_agente.estado === 'gravando') {
-            try { rec.start(); } catch(e) {}
-        }
+        if (_agente.estado === 'gravando') { try { rec.start(); } catch(e){} }
     };
 
     _agente.recognition = rec;
-    console.log('[Agente] Inicializado — pronto para comandos de voz.');
+    console.log('[Agente] Inicializado com histórico persistente.');
 }
 
-// ── Clique no botão flutuante ──
+function agenteAlterarVoz(nome) {
+    if (!nome) { _agente.vozSelecionada = null; return; }
+    const v = window.speechSynthesis.getVoices().find(function(x){ return x.name === nome; });
+    if (v) { _agente.vozSelecionada = v; _agenteFalarTexto('Voz configurada. Ficou bom assim?'); }
+}
+
 function agenteBtnClick() {
-    if (!_agente.suportado) {
-        showToast('Reconhecimento de voz não suportado neste navegador (use Chrome).', 'warning');
-        return;
-    }
-
+    if (!_agente.suportado) { showToast('Reconhecimento de voz não suportado (use Chrome).','warning'); return; }
     switch (_agente.estado) {
-        case 'idle':
-            _agenteIniciarGravacao();
-            break;
-        case 'gravando':
-            _agenteEnviarComando();
-            break;
-        case 'confirmando':
-            // Clique no botão durante confirmação = cancelar
-            agenteConfirmar(false);
-            break;
-        case 'processando':
-            // Não faz nada durante processamento
-            break;
+        case 'idle':        _agenteIniciarGravacao(); break;
+        case 'gravando':    _agenteEnviarComando();   break;
+        case 'confirmando': agenteConfirmar(false);   break;
     }
 }
 
-// ── Iniciar gravação ──
 function _agenteIniciarGravacao() {
-    _agente.textoFinal = '';
-    _agente.textoParcial = '';
-    _agente.frasesConfirmadas = []; // array limpo a cada nova gravação
-    _agente.pendingAction = null;
-
-    // Mostra painel
+    _agente.textoFinal = ''; _agente.textoParcial = '';
+    _agente.frasesConfirmadas = []; _agente.pendingAction = null;
     _agenteAbrirPainel();
     _agenteDefinirEstado('gravando');
-
-    // Limpa resposta anterior
-    const elResp = document.getElementById('agente-resposta');
-    const elConf = document.getElementById('agente-confirmacao');
-    if (elResp) elResp.classList.add('hidden');
-    if (elConf) elConf.classList.add('hidden');
-
-    // Atualiza transcrição com placeholder animado
-    const elTrans = document.getElementById('agente-transcricao');
-    if (elTrans) {
-        elTrans.innerHTML = '<span class="agente-placeholder">Ouvindo...</span>' +
-            '<div class="agente-ondas">' +
-            '<span></span><span></span><span></span><span></span><span></span>' +
-            '</div>';
-    }
-
-    try {
-        _agente.recognition.start();
-    } catch(e) {
-        // já estava rodando
-    }
-
-    // Inicia timer de silêncio
+    const elR = document.getElementById('agente-resposta');
+    const elC = document.getElementById('agente-confirmacao');
+    if (elR) elR.classList.add('hidden');
+    if (elC) elC.classList.add('hidden');
+    const elT = document.getElementById('agente-transcricao');
+    if (elT) elT.innerHTML = '<span class="agente-placeholder">Ouvindo...</span><div class="agente-ondas"><span></span><span></span><span></span><span></span><span></span></div>';
+    try { _agente.recognition.start(); } catch(e){}
     _agenteResetSilenceTimer();
 }
 
-// ── Reset do timer de silêncio (3s) ──
 function _agenteResetSilenceTimer() {
     if (_agente.silenceTimer) clearTimeout(_agente.silenceTimer);
     _agente.silenceTimer = setTimeout(function() {
-        if (_agente.estado === 'gravando') {
-            const texto = (_agente.textoFinal + _agente.textoParcial).trim();
-            if (texto.length > 0) {
-                _agenteEnviarComando();
-            }
+        if (_agente.estado === 'gravando' && (_agente.textoFinal + _agente.textoParcial).trim().length > 0) {
+            _agenteEnviarComando();
         }
     }, 3000);
 }
 
-// ── Atualiza painel com texto transcrito ──
 function _agenteAtualizarTranscricao() {
     const el = document.getElementById('agente-transcricao');
     if (!el) return;
-
-    const final = _agente.textoFinal;
-    const parcial = _agente.textoParcial;
-
     let html = '';
-    if (final) {
-        html += '<span>' + esc(final) + '</span>';
-    }
-    if (parcial) {
-        html += '<span class="agente-parcial"> ' + esc(parcial) + '</span>';
-    }
-    if (!html) {
-        html = '<span class="agente-placeholder">Ouvindo...</span>' +
-            '<div class="agente-ondas">' +
-            '<span></span><span></span><span></span><span></span><span></span>' +
-            '</div>';
-    }
+    if (_agente.textoFinal) html += '<span>' + esc(_agente.textoFinal) + '</span>';
+    if (_agente.textoParcial) html += '<span class="agente-parcial"> ' + esc(_agente.textoParcial) + '</span>';
+    if (!html) html = '<span class="agente-placeholder">Ouvindo...</span><div class="agente-ondas"><span></span><span></span><span></span><span></span><span></span></div>';
     el.innerHTML = html;
 }
 
-// ── Enviar comando para o Gemini ──
 async function _agenteEnviarComando() {
     if (_agente.silenceTimer) clearTimeout(_agente.silenceTimer);
-
     const texto = (_agente.textoFinal + ' ' + _agente.textoParcial).trim();
-
-    if (!texto) {
-        _agenteDefinirEstado('idle');
-        showToast('Nenhuma fala detectada.', 'warning');
-        return;
-    }
-
-    // Para a gravação
-    try { _agente.recognition.stop(); } catch(e) {}
-
+    if (!texto) { _agenteDefinirEstado('idle'); showToast('Nenhuma fala detectada.','warning'); return; }
+    try { _agente.recognition.stop(); } catch(e){}
     _agenteDefinirEstado('processando');
 
-    // Aplica dicionário de correções STT antes de mostrar e enviar
     const textoCorrigido = _agenteCorrigirSTT(texto);
-
-    // Mostra no painel: se houve correção, exibe ambos para transparência
-    const elTrans = document.getElementById('agente-transcricao');
-    if (elTrans) {
-        if (textoCorrigido !== texto) {
-            elTrans.innerHTML = '<span>' + esc(textoCorrigido) + '</span>' +
-                '<br><small style="color:var(--text-light); font-size:0.75rem;">' +
-                '<i class="fa-solid fa-wand-magic-sparkles"></i> Original: ' + esc(texto) + '</small>';
-        } else {
-            elTrans.innerHTML = '<span>' + esc(texto) + '</span>';
-        }
+    const elT = document.getElementById('agente-transcricao');
+    if (elT) {
+        elT.innerHTML = '<span>' + esc(textoCorrigido) + '</span>' +
+            (textoCorrigido !== texto ? '<br><small style="color:var(--text-light);font-size:0.75rem;"><i class="fa-solid fa-wand-magic-sparkles"></i> Original: ' + esc(texto) + '</small>' : '');
     }
 
     const apiKey = configGerais.geminiKey ? configGerais.geminiKey.trim() : '';
-    if (!apiKey) {
-        showToast('Configure a chave Gemini em Configurações antes de usar o agente.', 'error');
-        _agenteDefinirEstado('idle');
-        return;
-    }
+    if (!apiKey) { showToast('Configure a chave Gemini em Configurações.','error'); _agenteDefinirEstado('idle'); return; }
 
     try {
-        // Passa texto corrigido + original ao Gemini para máxima precisão
         const acao = await _agenteChamarGemini(textoCorrigido, texto, apiKey);
         await _agenteProcessarAcao(acao, textoCorrigido);
     } catch(err) {
-        console.error('[Agente] Erro:', err);
-        _agenteExibirResposta('❌ Erro ao processar comando: ' + err.message);
+        console.error('[Agente]', err);
+        _agenteExibirResposta('❌ Erro: ' + err.message);
         _agenteFalarTexto('Ocorreu um erro ao processar o comando.');
         _agenteDefinirEstado('idle');
     }
 }
 
-// ── Chamada ao Gemini (payload leve) ──
 async function _agenteChamarGemini(textoComando, textoOriginalSTT, apiKey) {
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + apiKey;
-
-    // Monta lista leve de funcionários: apenas "Nome — UNIDADE" (sem IDs, sem datas)
-    const listaFuncionarios = funcionariosList
-        .filter(function(f) { return !f.desligado; })
-        .map(function(f) { return (f.nome || '') + ' — ' + (f.unidade || ''); })
-        .join('\n');
-
-    // Data atual para contexto de datas relativas ("hoje", "sexta")
     const hoje = moment().format('YYYY-MM-DD');
     const diaSemana = moment().format('dddd');
 
-    const systemPrompt = `Você é o Agente Comandante do sistema MyABIB, um gestor de RH.
-Analise o comando de voz do usuário e retorne EXCLUSIVAMENTE um JSON válido (sem markdown, sem texto extra).
+    const listaFunc = funcionariosList
+        .filter(function(f){ return !f.desligado; })
+        .map(function(f){ return (f.nome||'') + ' — ' + (f.unidade||''); })
+        .join('\n');
+
+    // Injeta histórico no prompt
+    const blocoHist = _agenteHistMontarBloco();
+
+    const systemPrompt = `Você é o Agente Comandante do sistema MyABIB, gestor de RH.
+Analise o comando e retorne EXCLUSIVAMENTE JSON válido (sem markdown).
 
 DATA ATUAL: ${hoje} (${diaSemana})
 
-FUNCIONÁRIOS ATIVOS NO SISTEMA:
-${listaFuncionarios}
+FUNCIONÁRIOS ATIVOS:
+${listaFunc}
 
 AÇÕES DISPONÍVEIS:
-- criar_pendencia: criar uma tarefa/pendência para um funcionário ou geral
-- criar_aso: criar um prazo de exame ASO para um funcionário
-- consultar_prazos: consultar prazos/vencimentos (hoje, semana, urgentes)
-- consultar_pendencias: consultar pendências (por funcionário, prioridade, etc)
-- navegar: ir para uma aba do sistema (dashboard, funcionarios, ponto, gastos, pendencias, historico, configuracoes, whatsapp)
-- abrir_funcionario: abrir a ficha de um funcionário específico
-- conversa_livre: saudações, perguntas sobre o sistema, testes ou qualquer mensagem conversacional que não seja uma ação estruturada
-- nao_entendido: quando o comando for completamente incompreensível mesmo como conversa
+- criar_pendencia, criar_aso, consultar_prazos, consultar_pendencias
+- navegar, abrir_funcionario
+- consultar_historico: quando o usuário perguntar sobre ações passadas do agente ("o que você fez hoje?", "quais pendências você criou?", "me conta o que foi feito")
+- conversa_livre: saudações, testes, perguntas sobre o sistema
+- nao_entendido: comando incompreensível
 
-CATEGORIAS VÁLIDAS para pendências: "RH", "Departamento Pessoal", "Fiscal / Contábil", "Financeiro", "TI / Suporte", "Outros"
+CATEGORIAS: "RH", "Departamento Pessoal", "Fiscal / Contábil", "Financeiro", "TI / Suporte", "Outros"
+${blocoHist}
 
 REGRAS:
-1. Se o usuário mencionar um funcionário, encontre o nome mais próximo na lista acima e use-o EXATAMENTE como está na lista.
-2. Para datas relativas ("hoje", "amanhã", "sexta"), calcule a data real baseado em DATA ATUAL.
-3. Se "prioridade" não for mencionada, use "media".
-4. Se "categoria" não for mencionada, use "RH".
-5. Para "criar_aso", o campo "descricao" deve ser "ASO Periódico — [NOME DO FUNCIONÁRIO]".
-6. Para "conversa_livre", preencha "resposta_direta" com uma resposta curta, amigável e contextual. Você conhece o sistema MyABIB de gestão de RH. Exemplos: saudações → responda com entusiasmo; "está funcionando?" → confirme que sim e diga o que pode fazer; dúvidas sobre o sistema → explique brevemente.
-7. Se receber TEXTO BRUTO DO STT junto com o texto corrigido, use ambos para inferir a intenção real. O STT pode transcrever "de missão" quando o usuário disse "demissão". Priorize o texto corrigido, mas use o bruto como confirmação contextual.
+1. Nome de funcionário: use o mais próximo da lista acima.
+2. Datas relativas ("hoje","amanhã","sexta"): calcule a partir de DATA ATUAL.
+3. Prioridade padrão: "media". Categoria padrão: "RH".
+4. Para "criar_aso": descricao = "ASO Periódico — [NOME]".
+5. Para "conversa_livre": preencha "resposta_direta" com resposta curta e amigável.
+6. Para "consultar_historico": analise o HISTÓRICO acima e preencha "resposta_direta" com um resumo claro do que foi feito (quando, o quê). Se não houver histórico, diga isso.
+7. Para "criar_aso": descricao = "ASO Periódico — [NOME]".
+8. Se receber TEXTO BRUTO DO STT: use ambos para inferir a intenção real.
 
-FORMATO DE RESPOSTA (JSON puro):
+FORMATO JSON:
 {
   "acao": "nome_da_acao",
-  "nome_funcionario": "Nome Exato da Lista ou null",
-  "unidade": "NOME DA UNIDADE ou null",
-  "descricao": "descrição da pendência/prazo ou null",
-  "data": "YYYY-MM-DD ou null",
-  "prioridade": "alta|media|baixa",
-  "categoria": "categoria válida",
-  "aba_destino": "nome_da_aba ou null",
-  "filtro_consulta": "hoje|urgentes|vencidos|semana|null",
-  "confianca": "alta|media|baixa",
-  "resposta_direta": "texto da resposta para conversa_livre, null para outras ações"
+  "nome_funcionario": null,
+  "unidade": null,
+  "descricao": null,
+  "data": null,
+  "prioridade": "media",
+  "categoria": "RH",
+  "aba_destino": null,
+  "filtro_consulta": null,
+  "resposta_direta": null,
+  "confianca": "alta"
 }`;
 
-    // Monta o bloco de comando com texto corrigido + original para o Gemini ter contexto total
-    const blocoComando = textoOriginalSTT && textoOriginalSTT !== textoComando
-        ? '\n\nCOMANDO DO USUÁRIO (texto corrigido): ' + textoComando +
-          '\nTEXTO BRUTO DO STT (use como referência secundária se o corrigido não fizer sentido): ' + textoOriginalSTT
-        : '\n\nCOMANDO DO USUÁRIO: ' + textoComando;
+    const blocoCmd = textoOriginalSTT && textoOriginalSTT !== textoComando
+        ? '\n\nCOMANDO (corrigido): ' + textoComando + '\nTEXTO BRUTO STT: ' + textoOriginalSTT
+        : '\n\nCOMANDO: ' + textoComando;
 
     const body = {
-        contents: [{ parts: [{ text: systemPrompt + blocoComando }] }],
-        generationConfig: {
-            temperature: 0.1,
-            response_mime_type: 'application/json'
-        }
+        contents: [{ parts: [{ text: systemPrompt + blocoCmd }] }],
+        generationConfig: { temperature: 0.1, response_mime_type: 'application/json' }
     };
 
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-    });
-
-    if (!res.ok) {
-        const err = await res.json().catch(function() { return {}; });
-        throw new Error('Gemini API ' + res.status + ': ' + (err.error && err.error.message ? err.error.message : res.statusText));
-    }
-
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) { const e = await res.json().catch(function(){ return {}; }); throw new Error('Gemini ' + res.status + ': ' + ((e.error && e.error.message) || res.statusText)); }
     const data = await res.json();
-    const raw = data.candidates && data.candidates[0] && data.candidates[0].content &&
-                data.candidates[0].content.parts && data.candidates[0].content.parts[0] &&
-                data.candidates[0].content.parts[0].text;
-
+    const raw  = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
     if (!raw) throw new Error('Resposta vazia do Gemini');
-
-    // Remove markdown se vier
-    const clean = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    return JSON.parse(clean);
+    return JSON.parse(raw.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim());
 }
 
-// ── Match fuzzy local: nome_funcionario → idFunc ──
-function _agenteResolverFuncionario(nomeGemini, unidade) {
-    if (!nomeGemini) return null;
-
-    const nomeLower = nomeGemini.toLowerCase().trim();
-    const unidLower = unidade ? unidade.toLowerCase().trim() : null;
-
-    const ativos = funcionariosList.filter(function(f) { return !f.desligado; });
-
-    // 1. Match exato por nome
-    let match = ativos.find(function(f) {
-        return (f.nome || '').toLowerCase() === nomeLower;
-    });
-    if (match) return match;
-
-    // 2. Match por nome + unidade
-    if (unidLower) {
-        match = ativos.find(function(f) {
-            return (f.nome || '').toLowerCase().includes(nomeLower) &&
-                   (f.unidade || '').toLowerCase().includes(unidLower);
-        });
-        if (match) return match;
-    }
-
-    // 3. Match parcial por nome (primeiro nome ou sobrenome)
-    const partes = nomeLower.split(' ').filter(function(p) { return p.length > 2; });
-    const candidatos = ativos.filter(function(f) {
-        const fn = (f.nome || '').toLowerCase();
-        return partes.some(function(p) { return fn.includes(p); });
-    });
-
-    if (candidatos.length === 1) return candidatos[0];
-
-    // 4. Se há múltiplos e temos unidade, filtra por unidade
-    if (candidatos.length > 1 && unidLower) {
-        const filtradosPorUnidade = candidatos.filter(function(f) {
-            return (f.unidade || '').toLowerCase().includes(unidLower);
-        });
-        if (filtradosPorUnidade.length === 1) return filtradosPorUnidade[0];
-        if (filtradosPorUnidade.length > 1) return filtradosPorUnidade[0]; // pega o primeiro
-    }
-
-    if (candidatos.length > 0) return candidatos[0];
+function _agenteResolverFuncionario(nome, unidade) {
+    if (!nome) return null;
+    const nl = nome.toLowerCase().trim();
+    const ul = unidade ? unidade.toLowerCase().trim() : null;
+    const ativos = funcionariosList.filter(function(f){ return !f.desligado; });
+    let m = ativos.find(function(f){ return (f.nome||'').toLowerCase() === nl; });
+    if (m) return m;
+    if (ul) { m = ativos.find(function(f){ return (f.nome||'').toLowerCase().includes(nl) && (f.unidade||'').toLowerCase().includes(ul); }); if (m) return m; }
+    const partes = nl.split(' ').filter(function(p){ return p.length > 2; });
+    const cands = ativos.filter(function(f){ return partes.some(function(p){ return (f.nome||'').toLowerCase().includes(p); }); });
+    if (cands.length === 1) return cands[0];
+    if (cands.length > 1 && ul) { const fu = cands.filter(function(f){ return (f.unidade||'').toLowerCase().includes(ul); }); if (fu.length >= 1) return fu[0]; }
+    if (cands.length > 0) return cands[0];
     return null;
 }
 
-// ── Processar ação retornada pelo Gemini ──
 async function _agenteProcessarAcao(acao, textoOriginal) {
-    console.log('[Agente] Ação recebida:', acao);
-
-    if (!acao || !acao.acao) {
-        _agenteExibirResposta('❓ Não entendi o comando. Tente ser mais específico.');
-        _agenteFalarTexto('Não entendi o comando. Pode repetir?');
-        _agenteDefinirEstado('idle');
-        return;
-    }
+    if (!acao || !acao.acao) { _agenteExibirResposta('❓ Não entendi o comando.'); _agenteFalarTexto('Não entendi o comando.'); _agenteDefinirEstado('idle'); return; }
 
     switch (acao.acao) {
-
-        // ── CONSULTAR PRAZOS ──
         case 'consultar_prazos': {
-            const resposta = _agenteConsultarPrazos(acao.filtro_consulta);
-            _agenteExibirResposta(resposta.html);
-            _agenteFalarTexto(resposta.voz);
-            _agenteDefinirEstado('idle');
-            break;
+            const r = _agenteConsultarPrazos(acao.filtro_consulta);
+            _agenteExibirResposta(r.html); _agenteFalarTexto(r.voz);
+            _agenteHistRegistrar('consulta', textoOriginal, r.voz.substring(0,120), acao.acao);
+            _agenteDefinirEstado('idle'); break;
         }
-
-        // ── CONSULTAR PENDÊNCIAS ──
         case 'consultar_pendencias': {
             const func = _agenteResolverFuncionario(acao.nome_funcionario, acao.unidade);
-            const resposta = _agenteConsultarPendencias(acao.filtro_consulta, func);
-            _agenteExibirResposta(resposta.html);
-            _agenteFalarTexto(resposta.voz);
-            _agenteDefinirEstado('idle');
-            break;
+            const r = _agenteConsultarPendencias(acao.filtro_consulta, func);
+            _agenteExibirResposta(r.html); _agenteFalarTexto(r.voz);
+            _agenteHistRegistrar('consulta', textoOriginal, r.voz.substring(0,120), acao.acao);
+            _agenteDefinirEstado('idle'); break;
         }
-
-        // ── NAVEGAR ──
+        case 'consultar_historico': {
+            // Gemini já analisou o histórico e gerou resposta_direta
+            const resp = acao.resposta_direta || 'Não encontrei registros no histórico.';
+            _agenteExibirResposta('📋 ' + esc(resp));
+            _agenteFalarTexto(resp);
+            _agenteHistRegistrar('consulta', textoOriginal, 'Consultou histórico', acao.acao);
+            _agenteDefinirEstado('idle'); break;
+        }
         case 'navegar': {
-            const aba = acao.aba_destino;
             const abasValidas = ['dashboard','pendencias','gastos','funcionarios','desligamentos','ponto','whatsapp','mapa','historico','configuracoes'];
-            if (aba && abasValidas.includes(aba)) {
-                _agenteExibirResposta('🗂️ Navegando para <strong>' + aba + '</strong>...');
-                _agenteFalarTexto('Indo para ' + aba);
-                setTimeout(function() { switchTab(aba); }, 600);
-                _agenteDefinirEstado('idle');
+            if (acao.aba_destino && abasValidas.includes(acao.aba_destino)) {
+                _agenteExibirResposta('🗂️ Navegando para <strong>' + esc(acao.aba_destino) + '</strong>...');
+                _agenteFalarTexto('Indo para ' + acao.aba_destino);
+                _agenteHistRegistrar('acao', textoOriginal, 'Navegou para ' + acao.aba_destino, acao.acao);
+                setTimeout(function(){ switchTab(acao.aba_destino); }, 600);
             } else {
-                _agenteExibirResposta('❓ Aba não encontrada: <strong>' + esc(aba || '?') + '</strong>');
+                _agenteExibirResposta('❓ Aba não encontrada.');
                 _agenteFalarTexto('Aba não encontrada.');
-                _agenteDefinirEstado('idle');
             }
-            break;
+            _agenteDefinirEstado('idle'); break;
         }
-
-        // ── ABRIR FUNCIONÁRIO ──
         case 'abrir_funcionario': {
             const func = _agenteResolverFuncionario(acao.nome_funcionario, acao.unidade);
             if (func) {
                 _agenteExibirResposta('👤 Abrindo ficha de <strong>' + esc(func.nome) + '</strong>...');
                 _agenteFalarTexto('Abrindo ficha de ' + func.nome);
-                setTimeout(function() {
-                    switchTab('funcionarios');
-                    setTimeout(function() { abrirModalEditFunc(func.idFunc); }, 400);
-                }, 600);
-                _agenteDefinirEstado('idle');
+                _agenteHistRegistrar('acao', textoOriginal, 'Abriu ficha de ' + func.nome, acao.acao);
+                setTimeout(function(){ switchTab('funcionarios'); setTimeout(function(){ abrirModalEditFunc(func.idFunc); }, 400); }, 600);
             } else {
-                _agenteExibirResposta('❓ Funcionário não encontrado: <strong>' + esc(acao.nome_funcionario || '?') + '</strong>');
+                _agenteExibirResposta('❓ Funcionário não encontrado: <strong>' + esc(acao.nome_funcionario||'?') + '</strong>');
                 _agenteFalarTexto('Funcionário não encontrado.');
-                _agenteDefinirEstado('idle');
             }
-            break;
+            _agenteDefinirEstado('idle'); break;
         }
-
-        // ── CRIAR PENDÊNCIA (requer confirmação) ──
         case 'criar_pendencia': {
             const func = _agenteResolverFuncionario(acao.nome_funcionario, acao.unidade);
-            const descricao = acao.descricao || textoOriginal;
-            const vencimento = acao.data || '';
-            const prioridade = acao.prioridade || 'media';
-            const categoria = acao.categoria || 'RH';
-
-            let textoConf = '📋 Criar pendência:\n';
-            textoConf += '<strong>Descrição:</strong> ' + esc(descricao) + '<br>';
-            textoConf += '<strong>Prioridade:</strong> ' + esc(prioridade) + '<br>';
-            textoConf += '<strong>Categoria:</strong> ' + esc(categoria) + '<br>';
-            if (vencimento) textoConf += '<strong>Vencimento:</strong> ' + moment(vencimento).format('DD/MM/YYYY') + '<br>';
-            if (func) textoConf += '<strong>Funcionário:</strong> ' + esc(func.nome) + ' — ' + esc(func.unidade) + '<br>';
-
-            let vozConf = 'Vou criar a pendência: ' + descricao;
-            if (func) vozConf += ' para ' + func.nome + ' da unidade ' + func.unidade;
-            vozConf += '. Confirma?';
-
-            _agente.pendingAction = {
-                tipo: 'criar_pendencia',
-                dados: { descricao, vencimento, prioridade, categoria, idFunc: func ? func.idFunc : null }
-            };
-
-            _agenteExibirConfirmacao(textoConf, vozConf);
-            break;
+            const desc = acao.descricao || textoOriginal;
+            const venc = acao.data || '';
+            const pri  = acao.prioridade || 'media';
+            const cat  = acao.categoria || 'RH';
+            let txtConf = '📋 Criar pendência:<br><strong>Descrição:</strong> ' + esc(desc) + '<br><strong>Prioridade:</strong> ' + esc(pri) + '<br><strong>Categoria:</strong> ' + esc(cat) + '<br>';
+            if (venc) txtConf += '<strong>Vencimento:</strong> ' + moment(venc).format('DD/MM/YYYY') + '<br>';
+            if (func) txtConf += '<strong>Funcionário:</strong> ' + esc(func.nome) + ' — ' + esc(func.unidade) + '<br>';
+            let vozConf = 'Vou criar a pendência: ' + desc + (func ? ' para ' + func.nome + ' da unidade ' + func.unidade : '') + '. Confirma?';
+            _agente.pendingAction = { tipo:'criar_pendencia', cmdOriginal: textoOriginal, dados:{ descricao:desc, vencimento:venc, prioridade:pri, categoria:cat, idFunc:func?func.idFunc:null } };
+            _agenteExibirConfirmacao(txtConf, vozConf); break;
         }
-
-        // ── CRIAR ASO (requer confirmação) ──
         case 'criar_aso': {
             const func = _agenteResolverFuncionario(acao.nome_funcionario, acao.unidade);
-            if (!func) {
-                _agenteExibirResposta('❓ Funcionário não encontrado para criar o ASO: <strong>' + esc(acao.nome_funcionario || '?') + '</strong>');
-                _agenteFalarTexto('Funcionário não encontrado. Pode repetir o nome?');
-                _agenteDefinirEstado('idle');
-                return;
-            }
-
-            const dataVenc = acao.data || moment().add(7, 'days').format('YYYY-MM-DD');
-            const descricao = 'ASO Periódico — ' + func.nome;
-
-            const textoConf = '🏥 Criar prazo de ASO:<br>' +
-                '<strong>Funcionário:</strong> ' + esc(func.nome) + ' — ' + esc(func.unidade) + '<br>' +
-                '<strong>Vencimento:</strong> ' + moment(dataVenc).format('DD/MM/YYYY') + '<br>';
-
-            const vozConf = 'Vou criar um prazo de ASO para ' + func.nome +
-                ' da unidade ' + func.unidade +
-                ', com vencimento em ' + moment(dataVenc).format('DD [de] MMMM') + '. Confirma?';
-
-            _agente.pendingAction = {
-                tipo: 'criar_aso',
-                dados: { func, dataVenc, descricao }
-            };
-
-            _agenteExibirConfirmacao(textoConf, vozConf);
-            break;
+            if (!func) { _agenteExibirResposta('❓ Funcionário não encontrado: <strong>' + esc(acao.nome_funcionario||'?') + '</strong>'); _agenteFalarTexto('Funcionário não encontrado.'); _agenteDefinirEstado('idle'); return; }
+            const dv = acao.data || moment().add(7,'days').format('YYYY-MM-DD');
+            const txtConf = '🏥 Criar prazo ASO:<br><strong>Funcionário:</strong> ' + esc(func.nome) + ' — ' + esc(func.unidade) + '<br><strong>Vencimento:</strong> ' + moment(dv).format('DD/MM/YYYY') + '<br>';
+            const vozConf = 'Vou criar um prazo de ASO para ' + func.nome + ' da unidade ' + func.unidade + ', vencendo em ' + moment(dv).format('DD [de] MMMM') + '. Confirma?';
+            _agente.pendingAction = { tipo:'criar_aso', cmdOriginal: textoOriginal, dados:{ func, dataVenc:dv, descricao:'ASO Periódico — '+func.nome } };
+            _agenteExibirConfirmacao(txtConf, vozConf); break;
         }
-
-        // ── CONVERSA LIVRE ──
-        // O Gemini gera a resposta diretamente no JSON — sem segunda chamada à API.
-        // Cobre saudações, testes, perguntas sobre o sistema, etc.
         case 'conversa_livre': {
-            const resposta = acao.resposta_direta ||
-                'Olá! Estou funcionando e pronto para ajudar. Pode me pedir para criar pendências, consultar prazos, navegar entre abas ou abrir a ficha de um funcionário.';
-            _agenteExibirResposta('💬 ' + esc(resposta));
-            _agenteFalarTexto(resposta);
-            _agenteDefinirEstado('idle');
-            break;
+            const resp = acao.resposta_direta || 'Olá! Estou funcionando. Posso criar pendências, consultar prazos, navegar entre abas e abrir fichas de funcionários.';
+            _agenteExibirResposta('💬 ' + esc(resp));
+            _agenteFalarTexto(resp);
+            _agenteHistRegistrar('conversa', textoOriginal, resp.substring(0,100), acao.acao);
+            _agenteDefinirEstado('idle'); break;
         }
-
-        // ── NÃO ENTENDIDO ──
-        case 'nao_entendido':
         default: {
-            _agenteExibirResposta('❓ Não entendi: <em>"' + esc(textoOriginal) + '"</em><br><small style="color:var(--text-light)">Tente: "Crie uma pendência para João da Curvelo" ou "Quais prazos vencem hoje?"</small>');
+            _agenteExibirResposta('❓ Não entendi: <em>"' + esc(textoOriginal) + '"</em><br><small style="color:var(--text-light)">Tente: "Quais prazos vencem hoje?" ou "Crie uma pendência para João da Curvelo"</small>');
             _agenteFalarTexto('Não entendi o comando. Pode repetir?');
             _agenteDefinirEstado('idle');
-            break;
         }
     }
 }
 
-// ── Consultar prazos ──
 function _agenteConsultarPrazos(filtro) {
     const hoje = moment().startOf('day');
-
-    // ── Unifica três fontes de vencimento ──
-
-    // 1. Prazos (rescisão, ASO, FGTS, experiência)
-    const itensPrazos = prazosList
-        .filter(function(p) { return p.dataVencimento; })
-        .map(function(p) {
-            return {
-                data: p.dataVencimento,
-                nome: p.nome || '—',
-                tipo: p.tipo || p.tipoCod || 'Prazo',
-                fonte: 'prazo'
-            };
-        });
-
-    // 2. Pendências abertas com vencimento definido
-    const itensPendencias = pendenciasList
-        .filter(function(p) { return !p.concluida && p.vencimento; })
-        .map(function(p) {
-            // Tenta vincular nome do funcionário se tiver idFunc
-            var nomeFunc = '';
-            if (p.idFunc) {
-                var f = funcionariosList.find(function(f) { return f.idFunc === p.idFunc; });
-                if (f) nomeFunc = ' (' + f.nome + ')';
-            }
-            return {
-                data: p.vencimento,
-                nome: (p.descricao || 'Pendência') + nomeFunc,
-                tipo: 'Pendência · ' + (p.prioridade || 'média'),
-                fonte: 'pendencia'
-            };
-        });
-
-    // Junta tudo
-    let lista = itensPrazos.concat(itensPendencias);
-
-    // ── Aplica filtro temporal ──
-    switch (filtro) {
-        case 'hoje':
-            lista = lista.filter(function(p) {
-                return moment(p.data).isSame(hoje, 'day');
-            });
-            break;
-        case 'urgentes':
-            lista = lista.filter(function(p) {
-                const dias = moment(p.data).diff(hoje, 'days');
-                return dias >= 0 && dias <= configGerais.diasUrgente;
-            });
-            break;
-        case 'vencidos':
-            lista = lista.filter(function(p) {
-                return moment(p.data).isBefore(hoje);
-            });
-            break;
-        case 'semana':
-            lista = lista.filter(function(p) {
-                const dias = moment(p.data).diff(hoje, 'days');
-                return dias >= 0 && dias <= 7;
-            });
-            break;
-        default:
-            lista = lista.filter(function(p) {
-                const dias = moment(p.data).diff(hoje, 'days');
-                return dias >= 0 && dias <= 15;
-            });
+    const iP = prazosList.filter(function(p){ return p.dataVencimento; }).map(function(p){ return { data:p.dataVencimento, nome:p.nome||'—', tipo:p.tipo||p.tipoCod||'Prazo', fonte:'prazo' }; });
+    const iPend = pendenciasList.filter(function(p){ return !p.concluida && p.vencimento; }).map(function(p){
+        var nf=''; if(p.idFunc){ var f=funcionariosList.find(function(x){ return x.idFunc===p.idFunc; }); if(f) nf=' ('+f.nome+')'; }
+        return { data:p.vencimento, nome:(p.descricao||'Pendência')+nf, tipo:'Pendência · '+(p.prioridade||'média'), fonte:'pendencia' };
+    });
+    let lista = iP.concat(iPend);
+    switch(filtro) {
+        case 'hoje':    lista=lista.filter(function(p){ return moment(p.data).isSame(hoje,'day'); }); break;
+        case 'urgentes':lista=lista.filter(function(p){ const d=moment(p.data).diff(hoje,'days'); return d>=0&&d<=configGerais.diasUrgente; }); break;
+        case 'vencidos':lista=lista.filter(function(p){ return moment(p.data).isBefore(hoje); }); break;
+        case 'semana': lista=lista.filter(function(p){ const d=moment(p.data).diff(hoje,'days'); return d>=0&&d<=7; }); break;
+        default:        lista=lista.filter(function(p){ const d=moment(p.data).diff(hoje,'days'); return d>=0&&d<=15; });
     }
-
-    lista.sort(function(a, b) {
-        return moment(a.data).valueOf() - moment(b.data).valueOf();
-    });
-
-    if (lista.length === 0) {
-        const label = filtro === 'hoje' ? 'hoje' : filtro === 'urgentes' ? 'urgentes' : 'nos próximos dias';
-        return {
-            html: '✅ Nenhum vencimento ' + label + '.',
-            voz: 'Não há vencimentos ' + label + '.'
-        };
-    }
-
-    const max = 6;
-    let html = '<strong>' + lista.length + ' vencimento(s) encontrado(s):</strong><br>';
-    lista.slice(0, max).forEach(function(p) {
-        const dias = moment(p.data).diff(hoje, 'days');
-        const cor = dias < 0 ? 'var(--danger)' : dias <= configGerais.diasUrgente ? 'var(--warning)' : 'var(--success)';
-        const diasTexto = dias < 0 ? Math.abs(dias) + 'd atrás' : dias === 0 ? 'HOJE' : 'em ' + dias + 'd';
-        const icone = p.fonte === 'pendencia' ? '📋 ' : '📅 ';
-        html += '• <span style="color:' + cor + '">' + diasTexto + '</span> ' + icone + esc(p.nome) + ' <small style="color:var(--text-light)">(' + esc(p.tipo) + ')</small><br>';
-    });
-    if (lista.length > max) html += '<small style="color:var(--text-light)">...e mais ' + (lista.length - max) + ' itens.</small>';
-
-    let voz = lista.length + ' vencimento' + (lista.length > 1 ? 's' : '') + ' encontrado' + (lista.length > 1 ? 's' : '') + '. ';
-    lista.slice(0, 3).forEach(function(p) {
-        const dias = moment(p.data).diff(hoje, 'days');
-        const diasTexto = dias < 0 ? 'venceu há ' + Math.abs(dias) + ' dias' : dias === 0 ? 'vence hoje' : 'vence em ' + dias + ' dias';
-        voz += p.nome + ', ' + diasTexto + '. ';
-    });
-
+    lista.sort(function(a,b){ return moment(a.data).valueOf()-moment(b.data).valueOf(); });
+    if (!lista.length) { const lb=filtro==='hoje'?'hoje':filtro==='urgentes'?'urgentes':'nos próximos dias'; return { html:'✅ Nenhum vencimento '+lb+'.', voz:'Não há vencimentos '+lb+'.' }; }
+    const max=6;
+    let html='<strong>'+lista.length+' vencimento(s):</strong><br>';
+    lista.slice(0,max).forEach(function(p){ const d=moment(p.data).diff(hoje,'days'); const cor=d<0?'var(--danger)':d<=configGerais.diasUrgente?'var(--warning)':'var(--success)'; const dt=d<0?Math.abs(d)+'d atrás':d===0?'HOJE':'em '+d+'d'; const ic=p.fonte==='pendencia'?'📋 ':'📅 '; html+='• <span style="color:'+cor+'">'+dt+'</span> '+ic+esc(p.nome)+' <small style="color:var(--text-light)">('+esc(p.tipo)+')</small><br>'; });
+    if(lista.length>max) html+='<small style="color:var(--text-light)">...e mais '+(lista.length-max)+' itens.</small>';
+    let voz=lista.length+' vencimento'+(lista.length>1?'s':'')+'. ';
+    lista.slice(0,3).forEach(function(p){ const d=moment(p.data).diff(hoje,'days'); const dt=d<0?'venceu há '+Math.abs(d)+' dias':d===0?'vence hoje':'vence em '+d+' dias'; voz+=p.nome+', '+dt+'. '; });
     return { html, voz };
 }
 
-// ── Consultar pendências ──
 function _agenteConsultarPendencias(filtro, func) {
-    let lista = pendenciasList.filter(function(p) { return !p.concluida; });
-
-    if (func) {
-        lista = lista.filter(function(p) { return p.idFunc === func.idFunc; });
+    let lista = pendenciasList.filter(function(p){ return !p.concluida; });
+    if (func) lista=lista.filter(function(p){ return p.idFunc===func.idFunc; });
+    switch(filtro) {
+        case 'urgentes': lista=lista.filter(function(p){ return p.prioridade==='alta'; }); break;
+        case 'hoje': { const hj=moment().startOf('day'); lista=lista.filter(function(p){ return p.vencimento&&moment(p.vencimento).isSame(hj,'day'); }); break; }
+        case 'vencidos': lista=lista.filter(function(p){ return p.vencimento&&moment(p.vencimento).isBefore(moment().startOf('day')); }); break;
     }
-
-    switch (filtro) {
-        case 'urgentes':
-            lista = lista.filter(function(p) { return p.prioridade === 'alta'; });
-            break;
-        case 'hoje':
-            const hoje = moment().startOf('day');
-            lista = lista.filter(function(p) {
-                return p.vencimento && moment(p.vencimento).isSame(hoje, 'day');
-            });
-            break;
-        case 'vencidos':
-            lista = lista.filter(function(p) {
-                return p.vencimento && moment(p.vencimento).isBefore(moment().startOf('day'));
-            });
-            break;
-    }
-
-    lista.sort(function(a, b) {
-        const peso = { alta: 3, media: 2, baixa: 1 };
-        return (peso[b.prioridade] || 0) - (peso[a.prioridade] || 0);
-    });
-
-    if (lista.length === 0) {
-        const quem = func ? ' para ' + func.nome : '';
-        return {
-            html: '✅ Nenhuma pendência aberta' + quem + '.',
-            voz: 'Não há pendências abertas' + quem + '.'
-        };
-    }
-
-    const max = 5;
-    const quem = func ? ' de <strong>' + esc(func.nome) + '</strong>' : '';
-    let html = '<strong>' + lista.length + ' pendência(s)' + quem + ':</strong><br>';
-    lista.slice(0, max).forEach(function(p) {
-        const cor = p.prioridade === 'alta' ? 'var(--danger)' : p.prioridade === 'media' ? 'var(--warning)' : 'var(--text-light)';
-        html += '• <span style="color:' + cor + '">[' + (p.prioridade || '—').toUpperCase() + ']</span> ' + esc(p.descricao || '—') + '<br>';
-    });
-    if (lista.length > max) html += '<small style="color:var(--text-light)">...e mais ' + (lista.length - max) + '.</small>';
-
-    let voz = lista.length + ' pendência' + (lista.length > 1 ? 's' : '') + (func ? ' para ' + func.nome : '') + '. ';
-    lista.slice(0, 3).forEach(function(p) {
-        voz += p.descricao + ', prioridade ' + (p.prioridade || 'média') + '. ';
-    });
-
+    lista.sort(function(a,b){ const w={alta:3,media:2,baixa:1}; return (w[b.prioridade]||0)-(w[a.prioridade]||0); });
+    if (!lista.length) { const q=func?' para '+func.nome:''; return { html:'✅ Nenhuma pendência aberta'+q+'.', voz:'Não há pendências abertas'+q+'.' }; }
+    const max=5, q=func?' de <strong>'+esc(func.nome)+'</strong>':'';
+    let html='<strong>'+lista.length+' pendência(s)'+q+':</strong><br>';
+    lista.slice(0,max).forEach(function(p){ const cor=p.prioridade==='alta'?'var(--danger)':p.prioridade==='media'?'var(--warning)':'var(--text-light)'; html+='• <span style="color:'+cor+'">['+((p.prioridade||'—').toUpperCase())+']</span> '+esc(p.descricao||'—')+'<br>'; });
+    if(lista.length>max) html+='<small style="color:var(--text-light)">...e mais '+(lista.length-max)+'.</small>';
+    let voz=lista.length+' pendência'+(lista.length>1?'s':'')+(func?' para '+func.nome:'')+'. ';
+    lista.slice(0,3).forEach(function(p){ voz+=p.descricao+', prioridade '+(p.prioridade||'média')+'. '; });
     return { html, voz };
 }
 
-// ── Exibir confirmação no painel ──
-function _agenteExibirConfirmacao(textoHtml, textoVoz) {
-    const elConf = document.getElementById('agente-confirmacao');
-    const elTexto = document.getElementById('agente-confirmacao-texto');
-    const elResp = document.getElementById('agente-resposta');
-
-    if (elResp) elResp.classList.add('hidden');
-    if (elConf) elConf.classList.remove('hidden');
-    if (elTexto) elTexto.innerHTML = textoHtml;
-
+function _agenteExibirConfirmacao(html, voz) {
+    const elC=document.getElementById('agente-confirmacao'), elT=document.getElementById('agente-confirmacao-texto'), elR=document.getElementById('agente-resposta');
+    if(elR) elR.classList.add('hidden');
+    if(elC) elC.classList.remove('hidden');
+    if(elT) elT.innerHTML=html;
     _agenteDefinirEstado('confirmando');
-    _agenteFalarTexto(textoVoz);
+    _agenteFalarTexto(voz);
 }
 
-// ── Confirmar ou cancelar ação pendente ──
 function agenteConfirmar(confirmado) {
-    _agente.synth.cancel(); // para TTS em andamento
-
+    _agente.synth.cancel();
     if (!confirmado || !_agente.pendingAction) {
         _agenteExibirResposta('❌ Ação cancelada.');
         _agenteFalarTexto('Ação cancelada.');
+        _agenteHistRegistrar('acao', _agente.pendingAction ? (_agente.pendingAction.cmdOriginal||'') : '', 'Cancelado pelo usuário', 'cancelado');
         _agente.pendingAction = null;
-        _agenteDefinirEstado('idle');
-        return;
+        _agenteDefinirEstado('idle'); return;
     }
-
-    const pa = _agente.pendingAction;
-    _agente.pendingAction = null;
-
+    const pa = _agente.pendingAction; _agente.pendingAction = null;
     try {
-        if (pa.tipo === 'criar_pendencia') {
-            _agenteExecutarCriarPendencia(pa.dados);
-        } else if (pa.tipo === 'criar_aso') {
-            _agenteExecutarCriarAso(pa.dados);
-        }
-    } catch(err) {
-        console.error('[Agente] Erro ao executar:', err);
-        _agenteExibirResposta('❌ Erro ao executar: ' + err.message);
-        _agenteFalarTexto('Ocorreu um erro.');
-    }
-
+        if (pa.tipo === 'criar_pendencia') _agenteExecutarCriarPendencia(pa.dados, pa.cmdOriginal);
+        else if (pa.tipo === 'criar_aso')  _agenteExecutarCriarAso(pa.dados, pa.cmdOriginal);
+    } catch(err) { console.error('[Agente]', err); _agenteExibirResposta('❌ Erro: '+err.message); _agenteFalarTexto('Ocorreu um erro.'); }
     _agenteDefinirEstado('idle');
 }
 
-// ── Executar: criar pendência ──
-function _agenteExecutarCriarPendencia(dados) {
-    const novaPendencia = {
-        id: 'PEN_' + Date.now(),
-        descricao: dados.descricao,
-        categoria: dados.categoria || 'RH',
-        prioridade: dados.prioridade || 'media',
-        vencimento: dados.vencimento || '',
-        notificar: false,
-        idFunc: dados.idFunc || null,
-        concluida: false,
-        dataCriacao: moment().format('YYYY-MM-DD')
-    };
-
-    pendenciasList.push(novaPendencia);
-    salvarDados();
-    renderPendencias();
-    if (typeof renderDeadlines === 'function') renderDeadlines();
-    if (typeof mapaAtualizarTodosBadges === 'function' && _mapa.nos.length > 0) {
-        mapaAtualizarTodosBadges();
-    }
-
+function _agenteExecutarCriarPendencia(dados, cmdOriginal) {
+    pendenciasList.push({ id:'PEN_'+Date.now(), descricao:dados.descricao, categoria:dados.categoria||'RH', prioridade:dados.prioridade||'media', vencimento:dados.vencimento||'', notificar:false, idFunc:dados.idFunc||null, concluida:false, dataCriacao:moment().format('YYYY-MM-DD') });
+    salvarDados(); renderPendencias();
+    if(typeof renderDeadlines==='function') renderDeadlines();
+    if(typeof mapaAtualizarTodosBadges==='function'&&_mapa.nos.length>0) mapaAtualizarTodosBadges();
     const msg = '✅ Pendência criada: <strong>' + esc(dados.descricao) + '</strong>';
-    _agenteExibirResposta(msg);
-    _agenteFalarTexto('Pendência criada com sucesso.');
-    showToast('Pendência criada pelo Agente de Voz', 'success');
-    registrarHistorico('pendencia', 'Agente de Voz: Pendência criada', dados.descricao);
+    _agenteExibirResposta(msg); _agenteFalarTexto('Pendência criada com sucesso.');
+    _agenteHistRegistrar('acao', cmdOriginal||dados.descricao, 'Pendência criada: "'+dados.descricao+'"'+(dados.idFunc?' para idFunc '+dados.idFunc:''), 'criar_pendencia');
+    showToast('Pendência criada pelo Agente de Voz','success');
+    registrarHistorico('pendencia','Agente de Voz: Pendência criada',dados.descricao);
 }
 
-// ── Executar: criar prazo ASO ──
-function _agenteExecutarCriarAso(dados) {
-    const novoPrazo = {
-        id: 'ASO_' + Date.now(),
-        nome: dados.func.nome,
-        tipoCod: 'aso',
-        dataBase: moment().format('YYYY-MM-DD'),
-        tipo: 'ASO Periódico',
-        dataVencimento: dados.dataVenc
-    };
-
-    prazosList.push(novoPrazo);
-    salvarDados();
-    renderDeadlines();
-
-    const msg = '✅ Prazo ASO criado para <strong>' + esc(dados.func.nome) + '</strong> — vence em ' + moment(dados.dataVenc).format('DD/MM/YYYY');
-    _agenteExibirResposta(msg);
-    _agenteFalarTexto('Prazo de ASO criado para ' + dados.func.nome + '.');
-    showToast('Prazo ASO criado pelo Agente de Voz', 'success');
-    registrarHistorico('prazo', 'Agente de Voz: ASO criado', dados.func.nome + ' — ' + dados.dataVenc);
+function _agenteExecutarCriarAso(dados, cmdOriginal) {
+    prazosList.push({ id:'ASO_'+Date.now(), nome:dados.func.nome, tipoCod:'aso', dataBase:moment().format('YYYY-MM-DD'), tipo:'ASO Periódico', dataVencimento:dados.dataVenc });
+    salvarDados(); renderDeadlines();
+    const msg = '✅ Prazo ASO criado para <strong>' + esc(dados.func.nome) + '</strong> — ' + moment(dados.dataVenc).format('DD/MM/YYYY');
+    _agenteExibirResposta(msg); _agenteFalarTexto('Prazo de ASO criado para '+dados.func.nome+'.');
+    _agenteHistRegistrar('acao', cmdOriginal||dados.descricao, 'ASO criado para '+dados.func.nome+' ('+dados.func.unidade+') vencendo '+dados.dataVenc, 'criar_aso');
+    showToast('Prazo ASO criado pelo Agente de Voz','success');
+    registrarHistorico('prazo','Agente de Voz: ASO criado',dados.func.nome+' — '+dados.dataVenc);
 }
 
-// ── Exibir resposta no painel ──
-function _agenteExibirResposta(html) {
-    const elResp = document.getElementById('agente-resposta');
-    const elConf = document.getElementById('agente-confirmacao');
-    if (elConf) elConf.classList.add('hidden');
-    if (elResp) {
-        elResp.innerHTML = html;
-        elResp.classList.remove('hidden');
-    }
-}
-
-// ── Text-to-Speech ──
 function _agenteFalarTexto(texto) {
     if (!_agente.synth) return;
     _agente.synth.cancel();
-    const utt = new SpeechSynthesisUtterance(texto);
-    utt.lang = 'pt-BR';
-    utt.rate = 1.2;
-    utt.pitch = 1.05;
-    // Usa a voz selecionada pelo usuário, se houver
-    if (_agente.vozSelecionada) {
-        utt.voice = _agente.vozSelecionada;
-    }
-    _agente.synth.speak(utt);
+    const u = new SpeechSynthesisUtterance(texto);
+    u.lang='pt-BR'; u.rate=1.2; u.pitch=1.05;
+    if (_agente.vozSelecionada) u.voice = _agente.vozSelecionada;
+    _agente.synth.speak(u);
 }
 
-// ── Alterar voz selecionada ──
-function agenteAlterarVoz(nomevoz) {
-    if (!nomevoz) {
-        _agente.vozSelecionada = null;
-        return;
-    }
-    const vozes = window.speechSynthesis.getVoices();
-    const voz = vozes.find(function(v) { return v.name === nomevoz; });
-    if (voz) {
-        _agente.vozSelecionada = voz;
-        // Demonstração imediata da voz escolhida
-        _agenteFalarTexto('Voz configurada. Ficou bom assim?');
-    }
+function _agenteExibirResposta(html) {
+    const elR=document.getElementById('agente-resposta'), elC=document.getElementById('agente-confirmacao');
+    if(elC) elC.classList.add('hidden');
+    if(elR) { elR.innerHTML=html; elR.classList.remove('hidden'); }
 }
 
-// ── Abrir painel ──
-function _agenteAbrirPainel() {
-    const el = document.getElementById('agente-painel');
-    if (el) el.classList.remove('agente-painel-oculto');
-}
+function _agenteAbrirPainel() { const el=document.getElementById('agente-painel'); if(el) el.classList.remove('agente-painel-oculto'); }
 
-// ── Fechar painel ──
 function agenteFecharPainel() {
-    const el = document.getElementById('agente-painel');
-    if (el) el.classList.add('agente-painel-oculto');
-    if (_agente.estado === 'gravando') {
-        try { _agente.recognition.stop(); } catch(e) {}
-    }
-    if (_agente.silenceTimer) clearTimeout(_agente.silenceTimer);
-    _agente.synth.cancel();
-    _agente.pendingAction = null;
+    const el=document.getElementById('agente-painel');
+    if(el) el.classList.add('agente-painel-oculto');
+    if(_agente.estado==='gravando') { try{_agente.recognition.stop();}catch(e){} }
+    if(_agente.silenceTimer) clearTimeout(_agente.silenceTimer);
+    _agente.synth.cancel(); _agente.pendingAction=null;
     _agenteDefinirEstado('idle');
 }
 
-// ── Definir estado visual do botão ──
-function _agenteDefinirEstado(novoEstado) {
-    _agente.estado = novoEstado;
-    const btn = document.getElementById('agente-btn');
-    const icone = document.getElementById('agente-btn-icone');
-    const label = document.getElementById('agente-btn-label');
-    if (!btn || !icone || !label) return;
-
-    // Remove todas as classes de estado
-    btn.classList.remove('agente-gravando', 'agente-processando', 'agente-confirmando');
-
-    switch (novoEstado) {
-        case 'idle':
-            icone.className = 'fa-solid fa-microphone';
-            label.textContent = 'Falar';
-            break;
-        case 'gravando':
-            btn.classList.add('agente-gravando');
-            icone.className = 'fa-solid fa-stop';
-            label.textContent = 'Parar';
-            break;
-        case 'processando':
-            btn.classList.add('agente-processando');
-            icone.className = 'fa-solid fa-spinner fa-spin';
-            label.textContent = '...';
-            break;
-        case 'confirmando':
-            btn.classList.add('agente-confirmando');
-            icone.className = 'fa-solid fa-question';
-            label.textContent = 'Conf.';
-            break;
+function _agenteDefinirEstado(s) {
+    _agente.estado=s;
+    const btn=document.getElementById('agente-btn'), ic=document.getElementById('agente-btn-icone'), lb=document.getElementById('agente-btn-label');
+    if(!btn||!ic||!lb) return;
+    btn.classList.remove('agente-gravando','agente-processando','agente-confirmando');
+    switch(s) {
+        case 'idle':        ic.className='fa-solid fa-microphone'; lb.textContent='Falar'; break;
+        case 'gravando':    btn.classList.add('agente-gravando');    ic.className='fa-solid fa-stop';          lb.textContent='Parar'; break;
+        case 'processando': btn.classList.add('agente-processando'); ic.className='fa-solid fa-spinner fa-spin'; lb.textContent='...'; break;
+        case 'confirmando': btn.classList.add('agente-confirmando'); ic.className='fa-solid fa-question';      lb.textContent='Conf.'; break;
     }
+}
+
+// ── Dicionário de correções STT ──
+function _agenteCorrigirSTT(texto) {
+    if (!texto) return texto;
+    let t = texto;
+    const correcoes = [
+        [/\bde miss[aã]o\b/gi,'demissão'],[/\badmiss[aã]o\b/gi,'admissão'],[/\ba miss[aã]o\b/gi,'admissão'],[/\bat\s*miss[aã]o\b/gi,'admissão'],
+        [/\ba\s*s\s*o\b/gi,'ASO'],[/\bexame\s+a\s*s\s*o\b/gi,'exame ASO'],[/\bA\.?S\.?O\.?\b/g,'ASO'],
+        [/\bpend[êe]ncia\b/gi,'pendência'],[/\bpend[êe]ncias\b/gi,'pendências'],
+        [/\brescis[aã]o\b/gi,'rescisão'],[/\bferi[aa]s\b/gi,'férias'],
+        [/\bfuncion[aá]rio\b/gi,'funcionário'],[/\bfuncion[aá]rios\b/gi,'funcionários'],
+        [/\burj[êe]nte\b/gi,'urgente'],[/\bpra[zs]o\b/gi,'prazo'],
+        [/\bcurv[eê]lo\b/gi,'CURVELO'],[/\bbarba[sc]ena\b/gi,'BARBACENA'],
+        [/\bmontes\s+claros\b/gi,'MONTES CLAROS'],[/\bjan[aá]uba\b/gi,'JANAÚBA'],
+        [/\bjanu[aá]ria\b/gi,'JANUÁRIA'],[/\bparacat[uú]\b/gi,'PARACATU'],
+        [/\bitabira\b/gi,'ITABIRA'],[/\bcaratinga\b/gi,'CARATINGA'],
+        [/\bunai\b/gi,'UNAÍ'],[/\bub[aá]\b/gi,'UBÁ'],[/\bcongonhas\b/gi,'CONGONHAS'],
+        [/\bsext[ao]\b/gi,'sexta'],[/\bquint[ao]\b/gi,'quinta'],[/\bamanh[aã]\b/gi,'amanhã'],
+        [/\bsete\b(?=\s*(?:dias|meses))/gi,'7'],[/\bquinze\b(?=\s*(?:dias|meses))/gi,'15'],[/\btrinta\b(?=\s*(?:dias|meses))/gi,'30'],
+    ];
+    correcoes.forEach(function(p){ t = t.replace(p[0], p[1]); });
+    return t.replace(/\s{2,}/g,' ').trim();
 }

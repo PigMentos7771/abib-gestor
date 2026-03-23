@@ -1764,6 +1764,21 @@
                         </div>
                     </div>
 
+                    <!-- Toggle: converte efetivado → experiência -->
+                    <div id="edit-converter-exp-wrap" class="hidden" style="margin-bottom:1rem;">
+                        <div style="background:var(--warning-light); padding:0.85rem 1rem; border-radius:8px; border-left:4px solid var(--warning); display:flex; align-items:center; gap:0.75rem;">
+                            <i class="fa-solid fa-triangle-exclamation" style="color:var(--warning);"></i>
+                            <div style="flex:1; font-size:0.85rem; color:var(--text-main);">
+                                Este colaborador está como <strong>Prazo Indeterminado</strong>. Deseja converter para Contrato de Experiência?
+                            </div>
+                            <div class="checkbox-wrapper" style="flex-shrink:0;">
+                                <input type="checkbox" id="edit-ativar-exp"
+                                    onchange="editToggleConverterExp(this.checked)">
+                                <label for="edit-ativar-exp" style="margin:0; cursor:pointer; font-size:0.85rem;">Converter</label>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="form-group row"
                         style="background:var(--bg-page); padding:1rem; border-radius:8px; border:1px dashed var(--border); margin-bottom: 1.5rem;"
                         id="edit-area-exp">
@@ -2648,8 +2663,6 @@
 
 
     <!-- ═══ AGENTE COMANDANTE POR VOZ ═══ -->
-
-    <!-- Painel de feedback do agente (transcrição + resposta) -->
     <div id="agente-painel" class="agente-painel agente-painel-oculto">
         <div class="agente-painel-header">
             <span id="agente-painel-titulo">
@@ -2683,8 +2696,6 @@
             </div>
         </div>
     </div>
-
-    <!-- Botão flutuante principal -->
     <button id="agente-btn" class="agente-btn" onclick="agenteBtnClick()" title="Agente de Voz">
         <i id="agente-btn-icone" class="fa-solid fa-microphone"></i>
         <span id="agente-btn-label" class="agente-btn-label">Falar</span>
