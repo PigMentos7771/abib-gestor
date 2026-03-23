@@ -10598,10 +10598,106 @@ const _agente = {
     textoFinal: '',          // transcrição confirmada (join de frasesConfirmadas)
     textoParcial: '',        // transcrição interim da sessão atual
     frasesConfirmadas: [],   // array de frases finalizadas entre reinícios do recognizer
+    vozSelecionada: null,    // objeto SpeechSynthesisVoice escolhido pelo usuário
     pendingAction: null,     // objeto JSON da ação aguardando confirmação
     synth: window.speechSynthesis,
     suportado: false,        // Web Speech API disponível?
 };
+
+// ── Dicionário de correções STT ──
+// Corrige erros fonéticos comuns do Web Speech API em pt-BR
+// especialmente para termos do domínio de RH/DP que o modelo confunde
+function _agenteCorrigirSTT(texto) {
+    if (!texto) return texto;
+
+    // Normaliza: lowercase para matching, preserva original capitalizado depois
+    let t = texto;
+
+    const correcoes = [
+        // Termos de RH confundidos foneticamente
+        [/de miss[aã]o/gi,          'demissão'],
+        [/de miss[oõ]es/gi,         'demissões'],
+        [/admiss[aã]o/gi,           'admissão'],   // às vezes vira "at miss~"
+        [/at\s*miss[aã]o/gi,        'admissão'],
+        [/a miss[aã]o/gi,           'admissão'],
+        [/A\.?S\.?O\.?/g,           'ASO'],
+        [/a\s*s\s*o/gi,             'ASO'],
+        [/exame\s+a\s*s\s*o/gi,     'exame ASO'],
+        [/feri[aa]s/gi,             'férias'],
+        [/rescis[aã]o/gi,           'rescisão'],
+        [/rescis[oõ]es/gi,          'rescisões'],
+        [/pend[êe]ncia/gi,          'pendência'],
+        [/pend[êe]ncias/gi,         'pendências'],
+        [/funcion[aá]rio/gi,        'funcionário'],
+        [/funcion[aá]rios/gi,       'funcionários'],
+        [/contra[ct]o/gi,           'contrato'],
+        [/pra[zs]o/gi,              'prazo'],
+        [/pra[zs]os/gi,             'prazos'],
+        [/urj[êe]nte/gi,            'urgente'],
+        [/urj[êe]ntes/gi,           'urgentes'],
+        [/m[ée]dia/gi,              'média'],
+        [/m[ée]dio/gi,              'médio'],
+        [/vencimento/gi,            'vencimento'],
+        [/vencimentos/gi,           'vencimentos'],
+        [/cat[êe]goria/gi,          'categoria'],
+        [/prioridade/gi,            'prioridade'],
+
+        // Palavras curtas que o STT frequentemente trunca ou confunde
+        [/com(?=\s+(?:o|a|os|as|um|uma))/gi, 'como'],  // "com o" → "como" quando seguido de artigo
+        [/para/gi,                  'para'],
+        [/de(?=\s+\w{5,})/gi,      function(m, offset, str) {
+            // Heurística: "de [palavra longa]" provavelmente está correto — não muda
+            return m;
+        }],
+
+        // Unidades que podem ser mal pronunciadas
+        [/curv[eê]lo/gi,            'CURVELO'],
+        [/barba[sc]ena/gi,          'BARBACENA'],
+        [/montes\s+claros/gi,       'MONTES CLAROS'],
+        [/janu[aá]ria/gi,           'JANUÁRIA'],
+        [/jan[aá]uba/gi,            'JANAÚBA'],
+        [/paracat[uú]/gi,           'PARACATU'],
+        [/pirapora/gi,              'PIRAPORA'],
+        [/itabira/gi,               'ITABIRA'],
+        [/leop[oo]ldina/gi,         'LEOPOLDINA'],
+        [/caratinga/gi,             'CARATINGA'],
+        [/unaí/gi,                  'UNAÍ'],
+        [/unai/gi,                  'UNAÍ'],
+        [/ub[aá]/gi,                'UBÁ'],
+        [/congonhas/gi,             'CONGONHAS'],
+        [/curvelo/gi,               'CURVELO'],
+
+        // Expressões de tempo comuns
+        [/hoje/gi,                  'hoje'],
+        [/amanh[aã]/gi,             'amanhã'],
+        [/semana/gi,                'semana'],
+        [/sext[ao]/gi,              'sexta'],
+        [/quint[ao]/gi,             'quinta'],
+        [/ter[cç][ao]/gi,           'terça'],
+
+        // Números por extenso → dígitos (útil para datas)
+        [/um(?=\s*(?:dia|mês|ano|semana))/gi,   '1'],
+        [/dois(?=\s*(?:dias|meses|anos|semanas))/gi, '2'],
+        [/tr[eê]s(?=\s*(?:dias|meses|anos|semanas))/gi, '3'],
+        [/sete(?=\s*(?:dias|meses|anos|semanas))/gi, '7'],
+        [/dez(?=\s*(?:dias|meses|anos|semanas))/gi, '10'],
+        [/quinze(?=\s*(?:dias|meses|anos|semanas))/gi, '15'],
+        [/trinta(?=\s*(?:dias|meses|anos|semanas))/gi, '30'],
+    ];
+
+    correcoes.forEach(function(par) {
+        if (typeof par[1] === 'function') {
+            t = t.replace(par[0], par[1]);
+        } else {
+            t = t.replace(par[0], par[1]);
+        }
+    });
+
+    // Remove espaços duplos gerados pelas substituições
+    t = t.replace(/\s{2,}/g, ' ').trim();
+
+    return t;
+}
 
 // ── Inicialização (chamada no DOMContentLoaded após fetchDadosNuvem) ──
 function agenteInit() {
@@ -10618,6 +10714,43 @@ function agenteInit() {
     }
 
     _agente.suportado = true;
+
+    // Carrega vozes disponíveis e popula o seletor no painel
+    // speechSynthesis.getVoices() pode retornar [] na primeira chamada
+    // — precisa aguardar o evento 'voiceschanged'
+    function _agentePopularVozes() {
+        const vozes = window.speechSynthesis.getVoices();
+        const sel = document.getElementById('agente-voz-select');
+        if (!sel || vozes.length === 0) return;
+
+        // Filtra vozes pt-BR primeiro, depois pt genérico, depois todas
+        const ptBR  = vozes.filter(function(v) { return v.lang === 'pt-BR'; });
+        const pt    = vozes.filter(function(v) { return v.lang.startsWith('pt') && v.lang !== 'pt-BR'; });
+        const outras = vozes.filter(function(v) { return !v.lang.startsWith('pt'); });
+        const ordenadas = ptBR.concat(pt).concat(outras);
+
+        sel.innerHTML = '<option value="">Padrão do sistema</option>';
+        ordenadas.forEach(function(v, i) {
+            const opt = document.createElement('option');
+            opt.value = v.name;
+            opt.textContent = v.name + (v.lang ? ' (' + v.lang + ')' : '') + (v.localService ? ' ★' : '');
+            sel.appendChild(opt);
+        });
+
+        // Tenta pré-selecionar "Google português" se disponível
+        const googlePtBR = ptBR.find(function(v) {
+            return v.name.toLowerCase().includes('google');
+        });
+        if (googlePtBR) {
+            sel.value = googlePtBR.name;
+            _agente.vozSelecionada = googlePtBR;
+        }
+    }
+
+    // Evento disparado quando vozes carregam (necessário no Chrome)
+    window.speechSynthesis.onvoiceschanged = _agentePopularVozes;
+    // Tenta carregar imediatamente (funciona em Firefox e Safari)
+    _agentePopularVozes();
 
     const rec = new SpeechRecognition();
     rec.lang = 'pt-BR';
@@ -10801,9 +10934,20 @@ async function _agenteEnviarComando() {
 
     _agenteDefinirEstado('processando');
 
-    // Mostra o texto final no painel
+    // Aplica dicionário de correções STT antes de mostrar e enviar
+    const textoCorrigido = _agenteCorrigirSTT(texto);
+
+    // Mostra no painel: se houve correção, exibe ambos para transparência
     const elTrans = document.getElementById('agente-transcricao');
-    if (elTrans) elTrans.innerHTML = '<span>' + esc(texto) + '</span>';
+    if (elTrans) {
+        if (textoCorrigido !== texto) {
+            elTrans.innerHTML = '<span>' + esc(textoCorrigido) + '</span>' +
+                '<br><small style="color:var(--text-light); font-size:0.75rem;">' +
+                '<i class="fa-solid fa-wand-magic-sparkles"></i> Original: ' + esc(texto) + '</small>';
+        } else {
+            elTrans.innerHTML = '<span>' + esc(texto) + '</span>';
+        }
+    }
 
     const apiKey = configGerais.geminiKey ? configGerais.geminiKey.trim() : '';
     if (!apiKey) {
@@ -10813,8 +10957,9 @@ async function _agenteEnviarComando() {
     }
 
     try {
-        const acao = await _agenteChamarGemini(texto, apiKey);
-        await _agenteProcessarAcao(acao, texto);
+        // Passa texto corrigido + original ao Gemini para máxima precisão
+        const acao = await _agenteChamarGemini(textoCorrigido, texto, apiKey);
+        await _agenteProcessarAcao(acao, textoCorrigido);
     } catch(err) {
         console.error('[Agente] Erro:', err);
         _agenteExibirResposta('❌ Erro ao processar comando: ' + err.message);
@@ -10824,7 +10969,7 @@ async function _agenteEnviarComando() {
 }
 
 // ── Chamada ao Gemini (payload leve) ──
-async function _agenteChamarGemini(textoComando, apiKey) {
+async function _agenteChamarGemini(textoComando, textoOriginalSTT, apiKey) {
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + apiKey;
 
     // Monta lista leve de funcionários: apenas "Nome — UNIDADE" (sem IDs, sem datas)
@@ -10864,6 +11009,7 @@ REGRAS:
 4. Se "categoria" não for mencionada, use "RH".
 5. Para "criar_aso", o campo "descricao" deve ser "ASO Periódico — [NOME DO FUNCIONÁRIO]".
 6. Para "conversa_livre", preencha "resposta_direta" com uma resposta curta, amigável e contextual. Você conhece o sistema MyABIB de gestão de RH. Exemplos: saudações → responda com entusiasmo; "está funcionando?" → confirme que sim e diga o que pode fazer; dúvidas sobre o sistema → explique brevemente.
+7. Se receber TEXTO BRUTO DO STT junto com o texto corrigido, use ambos para inferir a intenção real. O STT pode transcrever "de missão" quando o usuário disse "demissão". Priorize o texto corrigido, mas use o bruto como confirmação contextual.
 
 FORMATO DE RESPOSTA (JSON puro):
 {
@@ -10880,8 +11026,14 @@ FORMATO DE RESPOSTA (JSON puro):
   "resposta_direta": "texto da resposta para conversa_livre, null para outras ações"
 }`;
 
+    // Monta o bloco de comando com texto corrigido + original para o Gemini ter contexto total
+    const blocoComando = textoOriginalSTT && textoOriginalSTT !== textoComando
+        ? '\n\nCOMANDO DO USUÁRIO (texto corrigido): ' + textoComando +
+          '\nTEXTO BRUTO DO STT (use como referência secundária se o corrigido não fizer sentido): ' + textoOriginalSTT
+        : '\n\nCOMANDO DO USUÁRIO: ' + textoComando;
+
     const body = {
-        contents: [{ parts: [{ text: systemPrompt + '\n\nCOMANDO DO USUÁRIO: ' + textoComando }] }],
+        contents: [{ parts: [{ text: systemPrompt + blocoComando }] }],
         generationConfig: {
             temperature: 0.1,
             response_mime_type: 'application/json'
@@ -11342,9 +11494,28 @@ function _agenteFalarTexto(texto) {
     _agente.synth.cancel();
     const utt = new SpeechSynthesisUtterance(texto);
     utt.lang = 'pt-BR';
-    utt.rate = 1.05;
-    utt.pitch = 1;
+    utt.rate = 1.2;
+    utt.pitch = 1.05;
+    // Usa a voz selecionada pelo usuário, se houver
+    if (_agente.vozSelecionada) {
+        utt.voice = _agente.vozSelecionada;
+    }
     _agente.synth.speak(utt);
+}
+
+// ── Alterar voz selecionada ──
+function agenteAlterarVoz(nomevoz) {
+    if (!nomevoz) {
+        _agente.vozSelecionada = null;
+        return;
+    }
+    const vozes = window.speechSynthesis.getVoices();
+    const voz = vozes.find(function(v) { return v.name === nomevoz; });
+    if (voz) {
+        _agente.vozSelecionada = voz;
+        // Demonstração imediata da voz escolhida
+        _agenteFalarTexto('Voz configurada. Ficou bom assim?');
+    }
 }
 
 // ── Abrir painel ──

@@ -2659,6 +2659,14 @@
                 <i class="fa-solid fa-xmark"></i>
             </button>
         </div>
+        <div class="agente-voz-config">
+            <label for="agente-voz-select">
+                <i class="fa-solid fa-waveform-lines"></i> Voz:
+            </label>
+            <select id="agente-voz-select" onchange="agenteAlterarVoz(this.value)">
+                <option value="">Carregando vozes...</option>
+            </select>
+        </div>
         <div id="agente-transcricao" class="agente-transcricao">
             <span class="agente-placeholder">Aguardando comando...</span>
         </div>

@@ -2746,3 +2746,37 @@ body:has(.modal-overlay:not(.hidden)) {
     0%, 100% { transform: scaleY(0.3); }
     50%       { transform: scaleY(1); }
 }
+
+/* Seletor de voz no painel do agente */
+.agente-voz-config {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-page);
+}
+
+.agente-voz-config label {
+    font-size: 0.78rem;
+    color: var(--text-light);
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-shrink: 0;
+}
+
+.agente-voz-config label i {
+    color: var(--primary);
+    font-size: 0.75rem;
+}
+
+.agente-voz-config select {
+    flex: 1;
+    height: 30px;
+    font-size: 0.78rem;
+    padding: 0 0.5rem;
+    border-radius: 6px;
+    min-width: 0;
+}
