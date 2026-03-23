@@ -10595,8 +10595,9 @@ const _agente = {
     estado: 'idle',          // idle | gravando | processando | confirmando
     recognition: null,       // instância SpeechRecognition
     silenceTimer: null,      // timer para auto-envio após 3s de silêncio
-    textoFinal: '',          // transcrição confirmada
-    textoParcial: '',        // transcrição em andamento (interim)
+    textoFinal: '',          // transcrição confirmada (join de frasesConfirmadas)
+    textoParcial: '',        // transcrição interim da sessão atual
+    frasesConfirmadas: [],   // array de frases finalizadas entre reinícios do recognizer
     pendingAction: null,     // objeto JSON da ação aguardando confirmação
     synth: window.speechSynthesis,
     suportado: false,        // Web Speech API disponível?
@@ -10627,31 +10628,35 @@ function agenteInit() {
 
     // Resultado parcial ou final chegando
     rec.onresult = function(event) {
-        let parcial = '';
-        let final = '';
+        // IMPORTANTE: no modo single-shot, cada sessão começa do índice 0.
+        // Usamos _agente.frasesConfirmadas[] para acumular frases entre sessões.
+        // _agente.textoParcial contém APENAS o interim da sessão atual.
+        // Assim, reiniciar o recognizer nunca causa acumulação duplicada.
 
-        // Com continuous:false, event.results sempre começa do índice 0.
-        // Usamos event.resultIndex para pegar apenas o resultado atual.
-        for (let i = event.resultIndex; i < event.results.length; i++) {
+        let parcialSessaoAtual = '';
+        let finalSessaoAtual = '';
+
+        for (let i = 0; i < event.results.length; i++) {
             const texto = event.results[i][0].transcript;
             if (event.results[i].isFinal) {
-                final += texto + ' ';
+                finalSessaoAtual += texto + ' ';
             } else {
-                parcial += texto;
+                parcialSessaoAtual += texto;
             }
         }
 
-        if (final) {
-            _agente.textoFinal += final;
-            _agente.textoParcial = ''; // limpa parcial quando finaliza
+        if (finalSessaoAtual.trim()) {
+            // Adiciona a frase confirmada ao array — nunca re-adiciona
+            _agente.frasesConfirmadas.push(finalSessaoAtual.trim());
+            _agente.textoParcial = '';
+            // Reconstrói textoFinal a partir do array limpo
+            _agente.textoFinal = _agente.frasesConfirmadas.join(' ');
         } else {
-            _agente.textoParcial = parcial;
+            // Interim: mostra o parcial da sessão atual (não acumula com frases anteriores)
+            _agente.textoParcial = parcialSessaoAtual;
         }
 
-        // Atualiza painel com feedback visual
         _agenteAtualizarTranscricao();
-
-        // Reinicia o timer de silêncio sempre que há fala
         _agenteResetSilenceTimer();
     };
 
@@ -10710,6 +10715,7 @@ function agenteBtnClick() {
 function _agenteIniciarGravacao() {
     _agente.textoFinal = '';
     _agente.textoParcial = '';
+    _agente.frasesConfirmadas = []; // array limpo a cada nova gravação
     _agente.pendingAction = null;
 
     // Mostra painel
