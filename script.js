@@ -11261,65 +11261,99 @@ async function _agenteProcessarAcao(acao, textoOriginal) {
 // ── Consultar prazos ──
 function _agenteConsultarPrazos(filtro) {
     const hoje = moment().startOf('day');
-    let lista = prazosList.filter(function(p) { return p.dataVencimento; });
 
+    // ── Unifica três fontes de vencimento ──
+
+    // 1. Prazos (rescisão, ASO, FGTS, experiência)
+    const itensPrazos = prazosList
+        .filter(function(p) { return p.dataVencimento; })
+        .map(function(p) {
+            return {
+                data: p.dataVencimento,
+                nome: p.nome || '—',
+                tipo: p.tipo || p.tipoCod || 'Prazo',
+                fonte: 'prazo'
+            };
+        });
+
+    // 2. Pendências abertas com vencimento definido
+    const itensPendencias = pendenciasList
+        .filter(function(p) { return !p.concluida && p.vencimento; })
+        .map(function(p) {
+            // Tenta vincular nome do funcionário se tiver idFunc
+            var nomeFunc = '';
+            if (p.idFunc) {
+                var f = funcionariosList.find(function(f) { return f.idFunc === p.idFunc; });
+                if (f) nomeFunc = ' (' + f.nome + ')';
+            }
+            return {
+                data: p.vencimento,
+                nome: (p.descricao || 'Pendência') + nomeFunc,
+                tipo: 'Pendência · ' + (p.prioridade || 'média'),
+                fonte: 'pendencia'
+            };
+        });
+
+    // Junta tudo
+    let lista = itensPrazos.concat(itensPendencias);
+
+    // ── Aplica filtro temporal ──
     switch (filtro) {
         case 'hoje':
             lista = lista.filter(function(p) {
-                return moment(p.dataVencimento).isSame(hoje, 'day');
+                return moment(p.data).isSame(hoje, 'day');
             });
             break;
         case 'urgentes':
             lista = lista.filter(function(p) {
-                const dias = moment(p.dataVencimento).diff(hoje, 'days');
+                const dias = moment(p.data).diff(hoje, 'days');
                 return dias >= 0 && dias <= configGerais.diasUrgente;
             });
             break;
         case 'vencidos':
             lista = lista.filter(function(p) {
-                return moment(p.dataVencimento).isBefore(hoje);
+                return moment(p.data).isBefore(hoje);
             });
             break;
         case 'semana':
             lista = lista.filter(function(p) {
-                const dias = moment(p.dataVencimento).diff(hoje, 'days');
+                const dias = moment(p.data).diff(hoje, 'days');
                 return dias >= 0 && dias <= 7;
             });
             break;
         default:
-            // Sem filtro: próximos 15 dias
             lista = lista.filter(function(p) {
-                const dias = moment(p.dataVencimento).diff(hoje, 'days');
+                const dias = moment(p.data).diff(hoje, 'days');
                 return dias >= 0 && dias <= 15;
             });
     }
 
     lista.sort(function(a, b) {
-        return moment(a.dataVencimento).valueOf() - moment(b.dataVencimento).valueOf();
+        return moment(a.data).valueOf() - moment(b.data).valueOf();
     });
 
     if (lista.length === 0) {
         const label = filtro === 'hoje' ? 'hoje' : filtro === 'urgentes' ? 'urgentes' : 'nos próximos dias';
         return {
-            html: '✅ Nenhum prazo ' + label + '.',
-            voz: 'Não há prazos ' + label + '.'
+            html: '✅ Nenhum vencimento ' + label + '.',
+            voz: 'Não há vencimentos ' + label + '.'
         };
     }
 
-    const max = 5; // exibe no máximo 5 no painel
-    let html = '<strong>' + lista.length + ' prazo(s) encontrado(s):</strong><br>';
+    const max = 6;
+    let html = '<strong>' + lista.length + ' vencimento(s) encontrado(s):</strong><br>';
     lista.slice(0, max).forEach(function(p) {
-        const dias = moment(p.dataVencimento).diff(hoje, 'days');
+        const dias = moment(p.data).diff(hoje, 'days');
         const cor = dias < 0 ? 'var(--danger)' : dias <= configGerais.diasUrgente ? 'var(--warning)' : 'var(--success)';
         const diasTexto = dias < 0 ? Math.abs(dias) + 'd atrás' : dias === 0 ? 'HOJE' : 'em ' + dias + 'd';
-        html += '• <span style="color:' + cor + '">' + diasTexto + '</span> — ' + esc(p.nome) + ' (' + esc(p.tipo || p.tipoCod) + ')<br>';
+        const icone = p.fonte === 'pendencia' ? '📋 ' : '📅 ';
+        html += '• <span style="color:' + cor + '">' + diasTexto + '</span> ' + icone + esc(p.nome) + ' <small style="color:var(--text-light)">(' + esc(p.tipo) + ')</small><br>';
     });
-    if (lista.length > max) html += '<small style="color:var(--text-light)">...e mais ' + (lista.length - max) + ' prazos.</small>';
+    if (lista.length > max) html += '<small style="color:var(--text-light)">...e mais ' + (lista.length - max) + ' itens.</small>';
 
-    // Texto para TTS (mais conciso)
-    let voz = lista.length + ' prazo' + (lista.length > 1 ? 's' : '') + ' encontrado' + (lista.length > 1 ? 's' : '') + '. ';
+    let voz = lista.length + ' vencimento' + (lista.length > 1 ? 's' : '') + ' encontrado' + (lista.length > 1 ? 's' : '') + '. ';
     lista.slice(0, 3).forEach(function(p) {
-        const dias = moment(p.dataVencimento).diff(hoje, 'days');
+        const dias = moment(p.data).diff(hoje, 'days');
         const diasTexto = dias < 0 ? 'venceu há ' + Math.abs(dias) + ' dias' : dias === 0 ? 'vence hoje' : 'vence em ' + dias + ' dias';
         voz += p.nome + ', ' + diasTexto + '. ';
     });
