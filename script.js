@@ -10621,14 +10621,17 @@ function agenteInit() {
     const rec = new SpeechRecognition();
     rec.lang = 'pt-BR';
     rec.interimResults = true;   // resultados parciais para feedback visual
-    rec.continuous = true;       // não para sozinho após uma frase
-    rec.maxAlternatives = 1;
+    rec.continuous = false;      // modo single-shot: evita duplicação de resultados
+    rec.maxAlternatives = 1;     // no modo single-shot, continuous:false + restart manual
+                                 // é mais confiável que continuous:true no Chrome/Android
 
     // Resultado parcial ou final chegando
     rec.onresult = function(event) {
         let parcial = '';
         let final = '';
 
+        // Com continuous:false, event.results sempre começa do índice 0.
+        // Usamos event.resultIndex para pegar apenas o resultado atual.
         for (let i = event.resultIndex; i < event.results.length; i++) {
             const texto = event.results[i][0].transcript;
             if (event.results[i].isFinal) {
@@ -10640,8 +10643,10 @@ function agenteInit() {
 
         if (final) {
             _agente.textoFinal += final;
+            _agente.textoParcial = ''; // limpa parcial quando finaliza
+        } else {
+            _agente.textoParcial = parcial;
         }
-        _agente.textoParcial = parcial;
 
         // Atualiza painel com feedback visual
         _agenteAtualizarTranscricao();
@@ -10651,18 +10656,25 @@ function agenteInit() {
     };
 
     rec.onerror = function(event) {
-        // 'no-speech' é normal — não tratar como erro fatal
-        if (event.error === 'no-speech') return;
+        // 'no-speech' é normal no modo single-shot — apenas reinicia
+        if (event.error === 'no-speech') {
+            if (_agente.estado === 'gravando') {
+                try { rec.start(); } catch(e) {}
+            }
+            return;
+        }
+        // 'aborted' acontece quando paramos manualmente — ignorar
+        if (event.error === 'aborted') return;
         console.error('[Agente] Erro STT:', event.error);
         _agenteDefinirEstado('idle');
         showToast('Erro no reconhecimento de voz: ' + event.error, 'error');
     };
 
     rec.onend = function() {
-        // SpeechRecognition parou (ex: navegador cortou)
-        // Se ainda estávamos gravando, reenicia automaticamente
+        // No modo single-shot, 'end' dispara após cada frase reconhecida.
+        // Reinicia automaticamente para manter a escuta contínua.
         if (_agente.estado === 'gravando') {
-            try { rec.start(); } catch(e) { /* já rodando */ }
+            try { rec.start(); } catch(e) {}
         }
     };
 
