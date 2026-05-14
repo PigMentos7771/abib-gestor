@@ -597,6 +597,16 @@
                                     <span class="slider"></span>
                                 </label>
                             </div>
+                            <div class="ocr-api-prefer-inline"
+                                title="Se a API escolhida falhar (limite ou indisponível), o sistema tenta as outras na ordem combinada (Gemini ↔ OpenRouter → OpenAI).">
+                                <label for="ocr-primary-select" class="ocr-api-prefer-inline-lbl">IA OCR</label>
+                                <select id="ocr-primary-select" class="ocr-api-prefer-inline-select"
+                                    onchange="ocrDefinirProvedorPrimario(this.value)">
+                                    <option value="gemini">Gemini</option>
+                                    <option value="openrouter">OpenRouter</option>
+                                </select>
+                                <span class="ocr-api-prefer-inline-meta">Slug <code class="ocr-show-or-model"></code></span>
+                            </div>
                         </div>
                     </div>
                     <!-- Painel de Filtros Rápidos do Ponto -->
@@ -1557,9 +1567,27 @@
                                 Google AI Studio.</p>
 
                             <div class="form-group">
-                                <label for="cfg-gemini-key">Chave de API do Gemini 1.5 Flash</label>
-                                <input type="password" id="cfg-gemini-key" placeholder="Ex: AIzaSyB_1234abcd..."
+                                <label for="cfg-gemini-key">Chave de API do Google AI (Gemini)</label>
+                                <input type="password" id="cfg-gemini-key" placeholder="Ex: AIzaSy… (Google AI Studio)"
                                     style="width: 100%; font-family: monospace;">
+                            </div>
+                            <div class="form-group">
+                                <label for="cfg-openai-key">Chave OpenAI (opcional — fallback do OCR)</label>
+                                <input type="password" id="cfg-openai-key" placeholder="sk-… (platform.openai.com)"
+                                    style="width: 100%; font-family: monospace;">
+                                <small style="display:block;margin-top:6px;font-size:0.75rem;color:var(--text-light);">Usada só se não houver chave OpenRouter abaixo, ou como alternativa direta à API OpenAI. Modelo fixo no app: <code>gpt-4o-mini</code> (visão).</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="cfg-openrouter-key">Chave OpenRouter (opcional — prioridade no fallback)</label>
+                                <input type="password" id="cfg-openrouter-key" placeholder="sk-or-v1-… (openrouter.ai)"
+                                    style="width: 100%; font-family: monospace;">
+                                <small style="display:block;margin-top:6px;font-size:0.75rem;color:var(--text-light);">Se preenchida, o fallback do OCR usa a API unificada da <a href="https://openrouter.ai" target="_blank" rel="noopener noreferrer">OpenRouter</a> (formato compatível com OpenAI). Escolha um modelo com visão no campo abaixo.</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="cfg-openrouter-model">Modelo OpenRouter (slug)</label>
+                                <input type="text" id="cfg-openrouter-model" placeholder="openai/gpt-4o-mini"
+                                    style="width: 100%; font-family: monospace;" autocomplete="off">
+                                <small style="display:block;margin-top:6px;font-size:0.75rem;color:var(--text-light);">O leitor de cartão envia <strong>imagem</strong> à API: o slug precisa ser de um modelo com <strong>visão</strong> (multimodal). Ex.: <code>openai/gpt-4o-mini</code>, <code>google/gemini-2.0-flash-001</code>. Confira em <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer">openrouter.ai/models</a>. Vazio = padrão do app (<code>openai/gpt-4o-mini</code>).</small>
                             </div>
                         </div>
 
@@ -2403,6 +2431,8 @@
                             style="height: 100%; width: 0%; background: var(--primary); transition: width 0.3s ease;">
                         </div>
                     </div>
+
+                    <p id="ocr-modal-resumo-api" style="font-size:0.8rem;color:var(--text-light);margin:12px 0 0 0;line-height:1.4;"></p>
 
                     <div style="display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;">
                         <button class="btn-secondary" id="btn-ocr-pause" onclick="togglePauseOcr()"

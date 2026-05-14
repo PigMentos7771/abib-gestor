@@ -128,7 +128,12 @@ let configGerais = {
     diasVencidosOcultar: 10,
     tema: 'claro',
     geminiKey: '',
-    emailContabilidade: '',
+    /** Chave opcional da API OpenAI (visão) — fallback do OCR se a Gemini falhar. */
+    openaiKey: '',
+    /** Chave OpenRouter (sk-or-v1-…). Se preenchida, tem prioridade sobre a chave OpenAI direta no fallback. */
+    openrouterKey: '',
+    /** Preferência do leitor OCR: 'gemini' | 'openrouter' (define ordem de fallback). */
+    ocrPrimaryProvider: 'gemini',
     templatesEmail: {
         admissao: 'Olá, seguem os dados para registro de admissão do colaborador {NOME}, unidade {UNIDADE}, cargo {CARGO}. Admissão em {DATA}.',
         desligamento: 'Prezados, favor processar o desligamento do colaborador {NOME}, unidade {UNIDADE}. Motivo: {MOTIVO}. Último dia trabalhado: {DATA}.',
@@ -456,6 +461,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('cfg-aso-atencao').value = configGerais.diasAsoAtencao || 7;
         document.getElementById('cfg-tema').value = configGerais.tema || 'claro';
         document.getElementById('cfg-gemini-key').value = configGerais.geminiKey || '';
+        if (document.getElementById('cfg-openai-key')) {
+            document.getElementById('cfg-openai-key').value = configGerais.openaiKey || '';
+        }
+        if (document.getElementById('cfg-openrouter-key')) {
+            document.getElementById('cfg-openrouter-key').value = configGerais.openrouterKey || '';
+        }
+        if (document.getElementById('cfg-openrouter-model')) {
+            document.getElementById('cfg-openrouter-model').value = configGerais.openrouterModel || '';
+        }
         document.getElementById('cfg-dias-vencidos').value = configGerais.diasVencidosOcultar !== undefined ? configGerais.diasVencidosOcultar : 10;
         document.getElementById('cfg-email-contabilidade').value = configGerais.emailContabilidade || '';
 
@@ -475,6 +489,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('vitrine-pendencias').checked = vv.pendencias !== false;
         document.getElementById('vitrine-ponto').checked = vv.ponto !== false;
         sincronizarFormVisibilidadeAbas();
+        if (typeof _ocrSincRadiosFromConfig === 'function') _ocrSincRadiosFromConfig();
         if (configGerais.templatesEmail) {
             document.getElementById('tmpl-email-admissao').value = configGerais.templatesEmail.admissao || '';
             document.getElementById('tmpl-email-desligamento').value = configGerais.templatesEmail.desligamento || '';
@@ -487,6 +502,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         recuperarFilaOcrStorage();
+        if (typeof _ocrSincRadiosFromConfig === 'function') _ocrSincRadiosFromConfig();
         autoEfetivarAvisosPreviosVencidos();
         renderDeadlines();
         renderGraficos();
@@ -704,6 +720,7 @@ async function switchTab(tabId, editId = null, opts = {}) {
         if (editId) abrirModalGasto(editId);
     }
     if (tabId === 'ponto') {
+        if (typeof _ocrSincRadiosFromConfig === 'function') _ocrSincRadiosFromConfig();
         document.getElementById('ponto-mes-ano').value = moment().format('YYYY-MM');
         // Restaura modo denso do localStorage
         try {
@@ -731,6 +748,15 @@ async function switchTab(tabId, editId = null, opts = {}) {
         document.getElementById('cfg-aso-atencao').value = configGerais.diasAsoAtencao || 7;
         document.getElementById('cfg-tema').value = configGerais.tema || 'claro';
         document.getElementById('cfg-gemini-key').value = configGerais.geminiKey || '';
+        if (document.getElementById('cfg-openai-key')) {
+            document.getElementById('cfg-openai-key').value = configGerais.openaiKey || '';
+        }
+        if (document.getElementById('cfg-openrouter-key')) {
+            document.getElementById('cfg-openrouter-key').value = configGerais.openrouterKey || '';
+        }
+        if (document.getElementById('cfg-openrouter-model')) {
+            document.getElementById('cfg-openrouter-model').value = configGerais.openrouterModel || '';
+        }
         document.getElementById('cfg-dias-vencidos').value = configGerais.diasVencidosOcultar !== undefined ? configGerais.diasVencidosOcultar : 10;
         document.getElementById('cfg-email-contabilidade').value = configGerais.emailContabilidade || '';
 
@@ -756,6 +782,7 @@ async function switchTab(tabId, editId = null, opts = {}) {
         document.getElementById('tmpl-assunto-ferias').value = assuntosEmail.ferias || '';
 
         sincronizarFormVisibilidadeAbas();
+        if (typeof _ocrSincRadiosFromConfig === 'function') _ocrSincRadiosFromConfig();
 
         // Inicializa autocomplete de tags nos campos de template (uma vez por campo)
         if (typeof initTagAutocomplete === 'function') {
@@ -903,6 +930,9 @@ function atualizarVariaveisComData(data) {
                 ferias: (assNuvem.ferias && assNuvem.ferias.trim()) ? assNuvem.ferias : assPadrao.ferias
             }
         };
+        if (configGerais.ocrPrimaryProvider !== 'openrouter' && configGerais.ocrPrimaryProvider !== 'gemini') {
+            configGerais.ocrPrimaryProvider = 'gemini';
+        }
     }
     aplicarVisibilidadeAbasNoMenu();
 }
@@ -1635,6 +1665,15 @@ function salvarCFG(e) {
     const temaEscolhido = document.getElementById('cfg-tema').value;
     const toleranciaVenc = parseInt(document.getElementById('cfg-dias-vencidos').value);
     const geminiKey = document.getElementById('cfg-gemini-key').value.trim();
+    const openaiKey = document.getElementById('cfg-openai-key')
+        ? document.getElementById('cfg-openai-key').value.trim()
+        : '';
+    const openrouterKey = document.getElementById('cfg-openrouter-key')
+        ? document.getElementById('cfg-openrouter-key').value.trim()
+        : '';
+    const openrouterModel = document.getElementById('cfg-openrouter-model')
+        ? document.getElementById('cfg-openrouter-model').value.trim()
+        : '';
     const emailCont = document.getElementById('cfg-email-contabilidade').value.trim();
 
     const pdfEmpresa = document.getElementById('cfg-pdf-empresa').value.trim();
@@ -1671,6 +1710,18 @@ function salvarCFG(e) {
     configGerais.tema = temaEscolhido;
     configGerais.diasVencidosOcultar = toleranciaVenc;
     configGerais.geminiKey = geminiKey;
+    configGerais.openaiKey = openaiKey;
+    configGerais.openrouterKey = openrouterKey;
+    configGerais.openrouterModel = openrouterModel;
+    const ocrPriSel = document.getElementById('ocr-primary-select');
+    if (ocrPriSel) {
+        configGerais.ocrPrimaryProvider = ocrPriSel.value === 'openrouter' ? 'openrouter' : 'gemini';
+    } else {
+        const ocrPriEl = document.querySelector('input[name="ocr-primary-provider"]:checked');
+        if (ocrPriEl) {
+            configGerais.ocrPrimaryProvider = ocrPriEl.value === 'openrouter' ? 'openrouter' : 'gemini';
+        }
+    }
     configGerais.emailContabilidade = emailCont;
     configGerais.pdfEmpresa = pdfEmpresa;
     configGerais.pdfCnpj = pdfCnpj;
@@ -1709,6 +1760,8 @@ function salvarCFG(e) {
     }
 
     aplicarVisibilidadeAbasNoMenu();
+
+    if (typeof _ocrSincRadiosFromConfig === 'function') _ocrSincRadiosFromConfig();
 
     configFoiAlterado = false; // Limpa flag de alterações não salvas
     showToast('Configurações salvas com sucesso!', 'success');
@@ -5010,6 +5063,137 @@ const OCR_MATCH_SCORE_MIN = 0.92;
 const OCR_MATCH_TOP_GAP_MIN = 0.08;
 const OCR_COOLDOWN_BASE_MS = 15000;
 const OCR_COOLDOWN_MAX_MS = 180000;
+/** Modelos em ordem: principal + fallbacks se quota/429 ou indisponibilidade persistirem (mesma chave API). */
+const OCR_GEMINI_MODEL_CHAIN = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+const OCR_MAX_TENTATIVAS_API = 3;
+const OCR_DELAYS_RETRY_MS = [8000, 22000];
+/** Pausa entre um arquivo e outro na fila (RPM / burst). */
+const OCR_INTER_REQUEST_MS = 5000;
+/** Modelo OpenAI direto (fallback do OCR). */
+const OCR_OPENAI_MODEL = 'gpt-4o-mini';
+/** URL e modelo padrão no OpenRouter (API compatível com Chat Completions). */
+const OCR_OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const OCR_OPENROUTER_DEFAULT_MODEL = 'openai/gpt-4o-mini';
+/** Slugs com visão no OpenRouter — usados como fallback se o modelo da config não aceitar imagem. */
+const OCR_OPENROUTER_VISION_FALLBACKS = [
+    'openai/gpt-4o-mini',
+    'google/gemini-2.0-flash-001',
+    'openai/gpt-4o'
+];
+
+function _ocrModeloOpenRouterResolvido() {
+    const m = (configGerais.openrouterModel || '').trim();
+    return m || OCR_OPENROUTER_DEFAULT_MODEL;
+}
+
+/**
+ * model + models + route para o OpenRouter tentar slugs com suporte a imagem.
+ * @returns {{ model: string, models?: string[], route?: string }}
+ */
+function _ocrOpenRouterMontarCadeiaModelosVision() {
+    const userSlug = (_ocrModeloOpenRouterResolvido() || '').trim() || OCR_OPENROUTER_DEFAULT_MODEL;
+    const seen = new Set();
+    const chain = [];
+    [userSlug].concat(OCR_OPENROUTER_VISION_FALLBACKS).forEach(function (m) {
+        if (m && !seen.has(m)) {
+            seen.add(m);
+            chain.push(m);
+        }
+    });
+    const out = { model: chain[0] };
+    if (chain.length > 1) {
+        out.models = chain.slice(1, 4);
+    }
+    return out;
+}
+
+function _ocrAtualizarLabelsModeloOpenRouter() {
+    const slug = _ocrModeloOpenRouterResolvido();
+    document.querySelectorAll('.ocr-show-or-model').forEach(function (el) {
+        el.textContent = slug;
+    });
+    const row = document.querySelector('.ocr-api-prefer-inline');
+    if (row) {
+        row.title = 'Se a API escolhida falhar (limite ou indisponível), tenta as outras na ordem combinada. Modelo OpenRouter nas Configurações: ' + slug + '.';
+    }
+}
+
+function _ocrAtualizarResumoModalFila() {
+    const el = document.getElementById('ocr-modal-resumo-api');
+    if (!el) return;
+    const orM = _ocrModeloOpenRouterResolvido();
+    if (configGerais.ocrPrimaryProvider === 'openrouter') {
+        el.textContent = 'Ordem: OpenRouter (' + orM + ') → Gemini → OpenAI. (Ajuste ao lado de «Denso» na barra superior.)';
+    } else {
+        el.textContent = 'Ordem: Gemini → OpenRouter (' + orM + ') → OpenAI. (Ajuste ao lado de «Denso» na barra superior.)';
+    }
+}
+
+function _ocrSincRadiosFromConfig() {
+    const v = (configGerais.ocrPrimaryProvider === 'openrouter') ? 'openrouter' : 'gemini';
+    const sel = document.getElementById('ocr-primary-select');
+    if (sel) sel.value = v;
+    _ocrAtualizarLabelsModeloOpenRouter();
+    if (typeof _ocrAtualizarResumoModalFila === 'function') _ocrAtualizarResumoModalFila();
+}
+
+function ocrDefinirProvedorPrimario(val) {
+    configGerais.ocrPrimaryProvider = (val === 'openrouter') ? 'openrouter' : 'gemini';
+    const sel = document.getElementById('ocr-primary-select');
+    if (sel) sel.value = configGerais.ocrPrimaryProvider;
+    if (typeof _ocrAtualizarResumoModalFila === 'function') _ocrAtualizarResumoModalFila();
+    try { salvarDados(); } catch (e) { console.warn(e); }
+}
+
+function _ocrFallbackAplicavel(err) {
+    const code = err && err.ocrCode;
+    const msg = String(err && err.message ? err.message : '');
+    if (code === 'RATE_LIMIT' || code === 'SERVICE_UNAVAILABLE') return true;
+    return /vários modelos|limite de velocidade|429|RESOURCE_EXHAUSTED|exhausted|temporarily unavailable|503|overloaded|unavailable/i.test(msg);
+}
+
+function _ocrNomeMotorAmigavel(motor) {
+    if (motor === 'gemini') return 'Gemini (Google)';
+    if (motor === 'openrouter') return 'OpenRouter';
+    if (motor === 'openai') return 'OpenAI';
+    return motor || '?';
+}
+
+/** Texto curto para exibir na fila após extração (provedor, modelo, principal vs fallback na cadeia). */
+function _ocrMontarRotuloExtracao(stepId, idxNoPasso, idxPrimeiroComChave, innerMeta) {
+    const motor = (innerMeta && innerMeta.motor) ? innerMeta.motor : stepId;
+    const modelo = (innerMeta && innerMeta.modelo) ? String(innerMeta.modelo).trim() : '';
+    const papel = (idxNoPasso === idxPrimeiroComChave) ? 'principal' : 'fallback';
+    let s = _ocrNomeMotorAmigavel(motor);
+    if (modelo) s += ' · ' + modelo;
+    s += ' (' + papel + ')';
+    if (innerMeta && innerMeta.geminiCadeiaFallback) s += ' · cadeia interna Gemini';
+    return s;
+}
+
+function _ocrParseRetryDelayFromError(errJson) {
+    if (!errJson || !errJson.error) return 0;
+    const details = errJson.error.details;
+    if (Array.isArray(details)) {
+        for (const d of details) {
+            const t = d && d['@type'] ? String(d['@type']) : '';
+            if (t.includes('RetryInfo') && d.retryDelay) {
+                const rd = d.retryDelay;
+                if (typeof rd === 'string' && rd.endsWith('s')) {
+                    const n = parseFloat(rd);
+                    if (!isNaN(n)) return Math.min(120000, Math.max(1000, Math.ceil(n * 1000)));
+                }
+                if (rd && typeof rd === 'object' && rd.seconds != null) {
+                    const sec = parseInt(rd.seconds, 10);
+                    if (!isNaN(sec)) return Math.min(120000, Math.max(1000, sec * 1000));
+                }
+            }
+        }
+    }
+    const m = String(errJson.error.message || '').match(/retry in ([\d.]+)\s*s/i);
+    if (m) return Math.min(120000, Math.max(1000, Math.ceil(parseFloat(m[1]) * 1000)));
+    return 0;
+}
 
 function _ocrNorm(str) {
     return String(str || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
@@ -5127,8 +5311,8 @@ async function adicionarCartoesFila(event) {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
-    if (!configGerais.geminiKey) {
-        showToast("Erro: Configure sua Chave do Gemini na aba de Configurações primeiro.", "error");
+    if (!configGerais.geminiKey && !configGerais.openaiKey && !configGerais.openrouterKey) {
+        showToast("Erro: Configure a chave Gemini e/ou fallback (OpenRouter ou OpenAI) em Configurações.", "error");
         return;
     }
 
@@ -5172,6 +5356,8 @@ async function adicionarCartoesFila(event) {
 }
 
 function abrirModalFilaOcr() {
+    if (typeof _ocrSincRadiosFromConfig === 'function') _ocrSincRadiosFromConfig();
+    if (typeof _ocrAtualizarResumoModalFila === 'function') _ocrAtualizarResumoModalFila();
     document.getElementById('modal-fila-ocr').classList.remove('hidden');
     renderFilaOcr();
 }
@@ -5315,17 +5501,30 @@ async function processarFilaOcrWorker() {
     renderFilaOcr();
 
     try {
-        let aiResult = await chamarGeminiVisionLote(proximo);
+        let packOcr = await chamarOcrVisionLote(proximo);
+        let aiResult = packOcr && packOcr.data != null ? packOcr.data : packOcr;
+        let metaIa = packOcr && packOcr.meta ? packOcr.meta : null;
+        let sufixoIa = (metaIa && metaIa.rotulo) ? (' · IA: ' + metaIa.rotulo) : '';
+        if (metaIa) {
+            proximo.ocrMetaExtracao = {
+                motor: metaIa.motor,
+                modelo: metaIa.modelo,
+                papel: metaIa.papel,
+                rotulo: metaIa.rotulo,
+                etapa: metaIa.etapa,
+                geminiCadeiaFallback: metaIa.geminiCadeiaFallback || false
+            };
+        }
         let validadoObj = await validarEGravarPontoLote(aiResult, proximo.mesReferencia, proximo);
 
         if (validadoObj.pendentes && validadoObj.pendentes.length > 0) {
             proximo.status = 'vincular';
-            proximo.msgRetorno = "Extração limpa. Resolva " + validadoObj.pendentes.length + " vínculo(s).";
+            proximo.msgRetorno = "Extração limpa. Resolva " + validadoObj.pendentes.length + " vínculo(s)." + sufixoIa;
             proximo.aiMismatchedObjs = validadoObj.pendentes; // Cache memory Array [ {nome_lido_cartao, dias}, ... ]
             proximo.aiMismatchedObjsTotal = validadoObj.pendentes.length; // Salva o Length base pra usar no contador ex "1 de 3"
         } else {
             proximo.status = 'sucesso';
-            proximo.msgRetorno = validadoObj.msg;
+            proximo.msgRetorno = validadoObj.msg + sufixoIa;
         }
     } catch (e) {
         const code = e && e.ocrCode ? e.ocrCode : '';
@@ -5352,8 +5551,7 @@ async function processarFilaOcrWorker() {
     salvarFilaOcrStorage();
     renderFilaOcr();
 
-    // Delay de Descompressão (Anti-Gargalo Rate Limit Free Tier 15 RPM = 4seg per call)
-    await new Promise(r => setTimeout(r, 4500));
+    await new Promise(r => setTimeout(r, OCR_INTER_REQUEST_MS));
 
     ocrIsProcessing = false;
     processarFilaOcrWorker(); // Loop recursivo de Worker
@@ -5369,8 +5567,8 @@ function fileToBase64(file) {
 }
 
 async function chamarGeminiVisionLote(fileItem) {
-    const apiKey = configGerais.geminiKey;
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const apiKey = (configGerais.geminiKey || '').trim();
+    if (!apiKey) throw new Error('Configure a chave Gemini em Configurações.');
 
     const promptText = `
 Você é um Extrator de PDF/Imagens contábil de altíssima precisão. Cumpra:
@@ -5407,52 +5605,342 @@ Responda APENAS o JSON puro. Não invente lixos ou acentos e preserve a veracida
         }
     };
 
-    const MAX_TENTATIVAS = 3;
-    const DELAYS_RETRY = [5000, 15000]; // espera 5s na 2ª tentativa, 15s na 3ª
+    const retrySafeStatuses = new Set([500, 503, 529, 429]);
+    let lastErrDetail = '';
 
-    for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
+    for (let mi = 0; mi < OCR_GEMINI_MODEL_CHAIN.length; mi++) {
+        const modelId = OCR_GEMINI_MODEL_CHAIN[mi];
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+
+        for (let tentativa = 1; tentativa <= OCR_MAX_TENTATIVAS_API; tentativa++) {
+            let res;
+            try {
+                res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(bodyPay)
+                });
+            } catch (networkErr) {
+                if (tentativa < OCR_MAX_TENTATIVAS_API) {
+                    const d = OCR_DELAYS_RETRY_MS[tentativa - 1];
+                    console.warn(`[Gemini OCR ${modelId}] Falha de rede (${tentativa}/${OCR_MAX_TENTATIVAS_API}). Aguardando ${d / 1000}s...`);
+                    await new Promise(r => setTimeout(r, d));
+                    continue;
+                }
+                throw new Error("Sem conexão com a API. Verifique sua internet.");
+            }
+
+            if (res.ok) {
+                if (mi > 0) console.info(`[Gemini OCR] Extração concluída com modelo fallback: ${modelId}`);
+                const jsonResponse = await res.json();
+                const part0 = jsonResponse.candidates && jsonResponse.candidates[0] && jsonResponse.candidates[0].content && jsonResponse.candidates[0].content.parts && jsonResponse.candidates[0].content.parts[0];
+                const textRaw = part0 && part0.text != null ? part0.text : '';
+                let textOut = String(textRaw).replace(/```json/g, '').replace(/```/g, '').trim();
+                return {
+                    data: JSON.parse(textOut),
+                    meta: {
+                        motor: 'gemini',
+                        modelo: modelId,
+                        geminiCadeiaFallback: mi > 0
+                    }
+                };
+            }
+
+            let errJson = null;
+            try {
+                errJson = await res.json();
+            } catch (parseE) { /* corpo vazio */ }
+            lastErrDetail = (errJson && errJson.error && errJson.error.message) ? errJson.error.message : `HTTP ${res.status}`;
+
+            const headerRetry = res.headers.get('Retry-After');
+            let headerDelayMs = 0;
+            if (headerRetry) {
+                const sec = parseFloat(headerRetry);
+                if (!isNaN(sec)) headerDelayMs = Math.min(120000, Math.max(1000, Math.ceil(sec * 1000)));
+            }
+            const rpcDelayMs = _ocrParseRetryDelayFromError(errJson);
+            const baseDelay = OCR_DELAYS_RETRY_MS[Math.min(tentativa - 1, OCR_DELAYS_RETRY_MS.length - 1)];
+
+            const podeRepetir = retrySafeStatuses.has(res.status) && tentativa < OCR_MAX_TENTATIVAS_API;
+            if (podeRepetir) {
+                const delay = Math.max(baseDelay, headerDelayMs, rpcDelayMs);
+                console.warn(`[Gemini OCR ${modelId}] ${res.status} (${tentativa}/${OCR_MAX_TENTATIVAS_API}) — aguardando ${Math.ceil(delay / 1000)}s…`);
+                await new Promise(r => setTimeout(r, delay));
+                continue;
+            }
+
+            const temOutroModelo = mi < OCR_GEMINI_MODEL_CHAIN.length - 1;
+            if (res.status === 429 && temOutroModelo) {
+                console.warn(`[Gemini OCR] 429 em ${modelId}; tentando outro modelo da cadeia…`);
+                await new Promise(r => setTimeout(r, 4000));
+                break;
+            }
+            if (res.status === 429) {
+                throw _ocrErroComCodigo("Limite de velocidade atingido. A fila reagenda automaticamente — aguarde ou reduza uploads em lote.", 'RATE_LIMIT');
+            }
+
+            if (res.status === 400) throw new Error("Imagem inválida ou corrompida (Erro 400). Verifique o arquivo.");
+            if (res.status === 401 || res.status === 403) throw new Error("Chave de API inválida ou sem permissão (Erro " + res.status + "). Verifique nas configurações.");
+            if (res.status === 404 && temOutroModelo) {
+                console.warn(`[Gemini OCR] Modelo ${modelId} não encontrado (404); tentando próximo da cadeia…`);
+                break;
+            }
+            if (res.status === 404) throw new Error("Modelo Gemini não encontrado (404). Atualize o app ou a lista OCR_GEMINI_MODEL_CHAIN.");
+
+            if (res.status === 503 && temOutroModelo) {
+                console.warn(`[Gemini OCR] 503 em ${modelId}; tentando outro modelo…`);
+                await new Promise(r => setTimeout(r, 3000));
+                break;
+            }
+            if (res.status === 503) {
+                throw _ocrErroComCodigo("Serviço da API temporariamente indisponível (503). Tente novamente em instantes.", 'SERVICE_UNAVAILABLE');
+            }
+
+            throw new Error(`Erro na API: ${res.status}. ${lastErrDetail}`);
+        }
+    }
+
+    throw new Error("A API falhou após tentar vários modelos. " + (lastErrDetail ? `(${lastErrDetail})` : "Tente novamente mais tarde."));
+}
+
+/**
+ * Uma chamada Chat Completions + visão: provider 'openrouter' ou 'openai'.
+ */
+async function _ocrChamadaChatVision(fileItem, provider) {
+    let apiKey, modelId, url, providerLabel, logTag, useOpenRouter;
+    if (provider === 'openrouter') {
+        apiKey = (configGerais.openrouterKey || '').trim();
+        if (!apiKey) throw new Error('Chave OpenRouter não configurada.');
+        modelId = _ocrModeloOpenRouterResolvido();
+        url = OCR_OPENROUTER_URL;
+        providerLabel = 'OpenRouter';
+        logTag = 'OpenRouter OCR';
+        useOpenRouter = true;
+    } else if (provider === 'openai') {
+        apiKey = (configGerais.openaiKey || '').trim();
+        if (!apiKey) throw new Error('Chave OpenAI não configurada.');
+        modelId = OCR_OPENAI_MODEL;
+        url = 'https://api.openai.com/v1/chat/completions';
+        providerLabel = 'OpenAI';
+        logTag = 'OpenAI OCR';
+        useOpenRouter = false;
+    } else {
+        throw new Error('Provedor de visão inválido.');
+    }
+
+    const promptText = `Você é um Extrator de imagens de cartão de ponto com altíssima precisão.
+1. Extraia o nome do funcionário no cartão (como impresso ou assinado).
+2. Horários no formato HH:MM por dia.
+3. Cada dia pode incluir e1, s1, e2, s2 e folga (boolean).
+
+Responda APENAS um JSON cuja raiz é um objeto com uma única propriedade "cartoes": array de objetos, um por cartão na imagem.
+Cada elemento: { "nome_lido_cartao": string, "dias": { "1": { "e1", "s1", "e2", "s2", "folga" }, ... } }.
+Mesmo com um único cartão, use um array com um elemento. Não invente dados ilegíveis.`;
+
+    const mime = fileItem.mimeType && String(fileItem.mimeType).trim() ? fileItem.mimeType : 'image/jpeg';
+    const dataUrl = `data:${mime};base64,${fileItem.base64}`;
+
+    const imagePart = useOpenRouter
+        ? { type: 'image_url', image_url: { url: dataUrl } }
+        : { type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } };
+
+    const body = {
+        temperature: 0.1,
+        response_format: { type: 'json_object' },
+        max_tokens: 8192,
+        messages: [{
+            role: 'user',
+            content: [
+                { type: 'text', text: promptText },
+                imagePart
+            ]
+        }]
+    };
+    if (useOpenRouter) {
+        Object.assign(body, _ocrOpenRouterMontarCadeiaModelosVision());
+    } else {
+        body.model = modelId;
+    }
+
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + apiKey
+    };
+    if (useOpenRouter) {
+        headers['HTTP-Referer'] = (typeof window !== 'undefined' && window.location && window.location.origin)
+            ? window.location.origin
+            : 'https://localhost';
+        headers['X-Title'] = 'MyABIB OCR Ponto';
+    }
+
+    const maxT = 3;
+    const delays = [6000, 18000];
+    let openRouterVision404Retry = false;
+
+    for (let t = 1; t <= maxT; t++) {
         let res;
         try {
             res = await fetch(url, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(bodyPay)
+                headers: headers,
+                body: JSON.stringify(body)
             });
-        } catch (networkErr) {
-            // Erro de rede (sem conexão, fetch falhou)
-            if (tentativa < MAX_TENTATIVAS) {
-                console.warn(`[Gemini] Falha de rede (tentativa ${tentativa}/${MAX_TENTATIVAS}). Aguardando ${DELAYS_RETRY[tentativa - 1] / 1000}s...`);
-                await new Promise(r => setTimeout(r, DELAYS_RETRY[tentativa - 1]));
+        } catch (netErr) {
+            if (t < maxT) {
+                console.warn(`[${logTag}] Rede (${t}/${maxT}); aguardando ${delays[t - 1] / 1000}s…`);
+                await new Promise(r => setTimeout(r, delays[t - 1]));
                 continue;
             }
-            throw new Error("Sem conexão com a API. Verifique sua internet.");
+            throw new Error('Sem conexão com ' + providerLabel + '. Verifique sua internet.');
         }
 
         if (res.ok) {
-            let jsonResponse = await res.json();
-            let textOut = jsonResponse.candidates[0].content.parts[0].text;
-            textOut = textOut.replace(/```json/g, '').replace(/```/g, '').trim();
-            return JSON.parse(textOut);
+            const j = await res.json();
+            const choice = j.choices && j.choices[0];
+            if (choice && choice.finish_reason === 'content_filter') {
+                throw new Error(providerLabel + ' recusou processar esta imagem (filtro de conteúdo).');
+            }
+            const raw = choice && choice.message && choice.message.content;
+            if (!raw || !String(raw).trim()) throw new Error('Resposta vazia (' + providerLabel + ').');
+            let parsed;
+            try {
+                parsed = JSON.parse(String(raw).trim());
+            } catch (pe) {
+                const relaxed = String(raw).trim().replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+                try {
+                    parsed = JSON.parse(relaxed);
+                } catch (pe2) {
+                    throw new Error(providerLabel + ' retornou JSON inválido.');
+                }
+            }
+            const arr = Array.isArray(parsed)
+                ? parsed
+                : (parsed.cartoes || parsed.cards || parsed.items || parsed.folhas);
+            if (!Array.isArray(arr)) throw new Error(providerLabel + ': resposta sem array de cartões (esperado "cartoes").');
+            if (arr.length === 0) throw new Error('Nenhum cartão identificado na imagem (' + providerLabel + ').');
+            const modeloUsado = (j && j.model) ? j.model : (body.model || modelId);
+            console.info(`[${logTag}] Extração concluída com`, modeloUsado);
+            return {
+                data: arr,
+                meta: {
+                    motor: useOpenRouter ? 'openrouter' : 'openai',
+                    modelo: modeloUsado
+                }
+            };
         }
 
-        // Erros que valem a pena tentar novamente
-        const retrySafeCodes = [500, 503, 529];
-        if (retrySafeCodes.includes(res.status) && tentativa < MAX_TENTATIVAS) {
-            const delay = DELAYS_RETRY[tentativa - 1];
-            console.warn(`[Gemini] API retornou ${res.status} (tentativa ${tentativa}/${MAX_TENTATIVAS}). Aguardando ${delay / 1000}s antes de tentar novamente...`);
-            await new Promise(r => setTimeout(r, delay));
+        let errJ = null;
+        try {
+            errJ = await res.json();
+        } catch (x) { /* ignore */ }
+        const errMsg = (errJ && errJ.error && errJ.error.message) ? errJ.error.message : '';
+
+        const or404SemVisao = useOpenRouter && res.status === 404
+            && /no endpoints found|image input|support image/i.test(errMsg);
+        if (or404SemVisao && !openRouterVision404Retry) {
+            const jaSoMini = (String(body.model) === OCR_OPENROUTER_DEFAULT_MODEL) && !body.models;
+            if (jaSoMini) {
+                throw new Error('OpenRouter (OCR): nenhum endpoint aceitou imagem com o modelo padrão (' + OCR_OPENROUTER_DEFAULT_MODEL + '). Verifique a chave, o tamanho da foto ou tente outro slug com visão em Configurações. ' + errMsg);
+            }
+            openRouterVision404Retry = true;
+            body.model = OCR_OPENROUTER_DEFAULT_MODEL;
+            delete body.models;
+            delete body.route;
+            console.warn('[OpenRouter OCR] Sem rota com imagem para o slug; repetindo só com', body.model, '.');
+            t--;
+            continue;
+        }
+        if (or404SemVisao && openRouterVision404Retry) {
+            throw new Error('OpenRouter (OCR): nenhuma tentativa aceitou imagem. Use um slug com visão (multimodal), ex.: openai/gpt-4o-mini ou google/gemini-2.0-flash-001 — catálogo em https://openrouter.ai/models . Detalhe: ' + errMsg);
+        }
+
+        const retryable = [429, 500, 503, 529].includes(res.status);
+        if (retryable && t < maxT) {
+            let wait = delays[t - 1];
+            const m = errMsg.match(/try again in ([\d.]+)\s*s/i);
+            if (m) wait = Math.max(wait, Math.ceil(parseFloat(m[1]) * 1000));
+            console.warn(`[${logTag}] HTTP ${res.status} (${t}/${maxT}); aguardando ${Math.ceil(wait / 1000)}s…`);
+            await new Promise(r => setTimeout(r, wait));
             continue;
         }
 
-        // Erros sem retry
-        if (res.status === 429) throw _ocrErroComCodigo("Limite de velocidade gratuito atingido. Aguarde alguns segundos e tente de novo.", 'RATE_LIMIT');
-        if (res.status === 400) throw new Error("Imagem inválida ou corrompida (Erro 400). Verifique o arquivo.");
-        if (res.status === 401 || res.status === 403) throw new Error("Chave de API inválida ou sem permissão (Erro " + res.status + "). Verifique nas configurações.");
-        if (res.status === 503) throw _ocrErroComCodigo("Serviço da API temporariamente indisponível (503). Tente novamente em instantes.", 'SERVICE_UNAVAILABLE');
-        throw new Error(`Erro na API: ${res.status}. Tente novamente.`);
+        if (res.status === 429) {
+            throw _ocrErroComCodigo('Limite em ' + providerLabel + '. A fila reagenda automaticamente.', 'RATE_LIMIT');
+        }
+        if (res.status === 401 || res.status === 403) {
+            throw new Error('Chave ' + providerLabel + ' inválida ou sem permissão (' + res.status + ').');
+        }
+        if (res.status === 400) {
+            throw new Error(providerLabel + ' rejeitou o pedido (400). ' + errMsg);
+        }
+        throw new Error(providerLabel + ': erro ' + res.status + '. ' + errMsg);
     }
 
-    throw new Error("A API falhou após 3 tentativas. Tente novamente mais tarde.");
+    throw new Error(providerLabel + ' falhou após várias tentativas.');
+}
+
+/**
+ * Ordem: conforme configGerais.ocrPrimaryProvider ('gemini' ou 'openrouter').
+ * Gemini primeiro: Gemini → OpenRouter → OpenAI.
+ * OpenRouter primeiro: OpenRouter → Gemini → OpenAI.
+ */
+async function chamarOcrVisionLote(fileItem) {
+    const preferOR = (configGerais.ocrPrimaryProvider === 'openrouter');
+    const gk = (configGerais.geminiKey || '').trim();
+    const orK = (configGerais.openrouterKey || '').trim();
+    const oaK = (configGerais.openaiKey || '').trim();
+
+    if (!gk && !orK && !oaK) {
+        throw new Error('Configure pelo menos uma API (Gemini, OpenRouter ou OpenAI) em Configurações.');
+    }
+
+    const steps = preferOR
+        ? [
+            { id: 'openrouter', has: !!orK, run: function () { return _ocrChamadaChatVision(fileItem, 'openrouter'); } },
+            { id: 'gemini', has: !!gk, run: function () { return chamarGeminiVisionLote(fileItem); } },
+            { id: 'openai', has: !!oaK, run: function () { return _ocrChamadaChatVision(fileItem, 'openai'); } }
+        ]
+        : [
+            { id: 'gemini', has: !!gk, run: function () { return chamarGeminiVisionLote(fileItem); } },
+            { id: 'openrouter', has: !!orK, run: function () { return _ocrChamadaChatVision(fileItem, 'openrouter'); } },
+            { id: 'openai', has: !!oaK, run: function () { return _ocrChamadaChatVision(fileItem, 'openai'); } }
+        ];
+
+    const idxPrimeiroComChave = steps.findIndex(function (s) { return s.has; });
+
+    let lastErr = null;
+    let tried = false;
+    for (let idx = 0; idx < steps.length; idx++) {
+        const step = steps[idx];
+        if (!step.has) continue;
+        tried = true;
+        try {
+            const out = await step.run();
+            const inner = (out && out.meta) ? out.meta : { motor: step.id, modelo: '' };
+            const rotulo = _ocrMontarRotuloExtracao(step.id, idx, idxPrimeiroComChave, inner);
+            const papel = (idx === idxPrimeiroComChave) ? 'principal' : 'fallback';
+            return {
+                data: out.data,
+                meta: {
+                    motor: inner.motor || step.id,
+                    modelo: inner.modelo || '',
+                    etapa: step.id,
+                    papel: papel,
+                    rotulo: rotulo,
+                    geminiCadeiaFallback: !!inner.geminiCadeiaFallback
+                }
+            };
+        } catch (e) {
+            lastErr = e;
+            const restantes = steps.slice(idx + 1).filter(function (s) { return s.has; });
+            if (restantes.length === 0 || !_ocrFallbackAplicavel(e)) throw e;
+            console.warn('[OCR] ' + step.id + ' não concluiu; tentando próximo provedor…', e.message || e.ocrCode || '');
+        }
+    }
+    if (!tried) {
+        throw new Error('Nenhuma API disponível para as chaves e opções atuais. Ajuste a API principal ou Configurações.');
+    }
+    throw lastErr || new Error('OCR falhou.');
 }
 
 function _ocrContaConflitosSobrescrita(dbAtual, aiJSON) {

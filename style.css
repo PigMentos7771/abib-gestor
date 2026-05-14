@@ -2640,3 +2640,69 @@ body:has(.modal-overlay:not(.hidden)) {
 .agente-ondas span { display:inline-block; width:3px; height:100%; background:var(--danger); border-radius:2px; animation:agente-onda 0.8s ease-in-out infinite; }
 .agente-ondas span:nth-child(2){animation-delay:0.1s}.agente-ondas span:nth-child(3){animation-delay:0.2s}.agente-ondas span:nth-child(4){animation-delay:0.3s}.agente-ondas span:nth-child(5){animation-delay:0.4s}
 @keyframes agente-onda { 0%,100%{transform:scaleY(0.3)}50%{transform:scaleY(1)} }
+
+/* ── Preferência API OCR (controle discreto na barra do ponto) ─────── */
+.ocr-api-prefer-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-left: 4px;
+    padding: 3px 8px 3px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.03);
+    font-size: 0.78rem;
+    color: var(--text-light);
+    max-width: 100%;
+}
+body.dark-theme .ocr-api-prefer-inline {
+    background: rgba(255, 255, 255, 0.04);
+}
+.ocr-api-prefer-inline-lbl {
+    margin: 0;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-light);
+    white-space: nowrap;
+}
+.ocr-api-prefer-inline-select {
+    width: auto !important;
+    min-width: 9.5rem;
+    max-width: 12rem;
+    padding: 5px 8px !important;
+    font-size: 0.78rem !important;
+    height: auto !important;
+    line-height: 1.2;
+    border-radius: 6px;
+}
+.ocr-api-prefer-inline-meta {
+    font-size: 0.7rem;
+    color: var(--text-light);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 11rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ocr-api-prefer-inline-meta code {
+    font-family: ui-monospace, monospace;
+    font-size: 0.68rem;
+    font-weight: 500;
+    background: rgba(0, 0, 0, 0.07);
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: var(--text-main);
+}
+body.dark-theme .ocr-api-prefer-inline-meta code {
+    background: rgba(255, 255, 255, 0.08);
+}
+@media (max-width: 900px) {
+    .ocr-api-prefer-inline-meta {
+        display: none;
+    }
+}
