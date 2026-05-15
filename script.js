@@ -5149,7 +5149,9 @@ function _ocrFallbackAplicavel(err) {
     const code = err && err.ocrCode;
     const msg = String(err && err.message ? err.message : '');
     if (code === 'RATE_LIMIT' || code === 'SERVICE_UNAVAILABLE') return true;
-    return /vários modelos|limite de velocidade|429|RESOURCE_EXHAUSTED|exhausted|temporarily unavailable|503|overloaded|unavailable/i.test(msg);
+    /** Modelo inexistente ou indisponível no provedor atual — vale tentar OpenRouter/OpenAI se houver chave. */
+    if (code === 'MODEL_NOT_FOUND') return true;
+    return /vários modelos|limite de velocidade|429|RESOURCE_EXHAUSTED|exhausted|temporarily unavailable|503|overloaded|unavailable|Modelo Gemini não encontrado|OCR_GEMINI_MODEL_CHAIN/i.test(msg);
 }
 
 function _ocrNomeMotorAmigavel(motor) {
@@ -5685,7 +5687,13 @@ Responda APENAS o JSON puro. Não invente lixos ou acentos e preserve a veracida
                 console.warn(`[Gemini OCR] Modelo ${modelId} não encontrado (404); tentando próximo da cadeia…`);
                 break;
             }
-            if (res.status === 404) throw new Error("Modelo Gemini não encontrado (404). Atualize o app ou a lista OCR_GEMINI_MODEL_CHAIN.");
+            if (res.status === 404) {
+                throw _ocrErroComCodigo(
+                    'Modelo Gemini não encontrado (404)' + (lastErrDetail ? ' — ' + lastErrDetail : '')
+                        + '. Atualize a cadeia de modelos ou use OpenRouter/OpenAI em Configurações.',
+                    'MODEL_NOT_FOUND'
+                );
+            }
 
             if (res.status === 503 && temOutroModelo) {
                 console.warn(`[Gemini OCR] 503 em ${modelId}; tentando outro modelo…`);
