@@ -1315,6 +1315,46 @@ body:has(.modal-overlay:not(.hidden)) {
     opacity: 0.8;
 }
 
+/* 1ª Quinzena conferida: metade esquerda verde, metade direita fundo padrão */
+.ponto-card-conf-q1 {
+    border-left: 4px solid var(--success);
+    background: linear-gradient(to right, var(--success-light) 50%, var(--bg-card) 50%);
+}
+
+.ponto-card-conf-q1 .ponto-card-nome {
+    color: var(--success);
+}
+
+.ponto-card-conf-q1 .ponto-card-status {
+    color: var(--success);
+    opacity: 0.85;
+}
+
+/* 1ª Q. conferida + tem dados na 2ª quinzena → barra amarela à direita */
+.ponto-card-conf-q1.ponto-card-conf-q1-com-q2 {
+    border-right: 4px solid var(--warning);
+}
+
+/* 2ª Quinzena conferida: metade esquerda fundo padrão, metade direita verde */
+.ponto-card-conf-q2 {
+    border-right: 4px solid var(--success);
+    background: linear-gradient(to right, var(--bg-card) 50%, var(--success-light) 50%);
+}
+
+.ponto-card-conf-q2 .ponto-card-nome {
+    color: var(--success);
+}
+
+.ponto-card-conf-q2 .ponto-card-status {
+    color: var(--success);
+    opacity: 0.85;
+}
+
+/* 2ª Q. conferida + tem dados na 1ª quinzena → barra amarela à esquerda */
+.ponto-card-conf-q2.ponto-card-conf-q2-com-q1 {
+    border-left: 4px solid var(--warning);
+}
+
 /* Estado de carregamento progressivo */
 
 .ponto-card-loading {

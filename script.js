@@ -524,7 +524,9 @@ function _assinarEstadoPontoAtual() {
     const mesAno = document.getElementById('ponto-mes-ano') ? document.getElementById('ponto-mes-ano').value : '';
     if (!idFunc || !mesAno) return '';
 
-    const conferido = document.getElementById('ponto-conferido-check') ? !!document.getElementById('ponto-conferido-check').checked : false;
+    const confQ1 = document.getElementById('ponto-conferido-q1-check') ? !!document.getElementById('ponto-conferido-q1-check').checked : false;
+    const confQ2 = document.getElementById('ponto-conferido-q2-check') ? !!document.getElementById('ponto-conferido-q2-check').checked : false;
+    const conferido = confQ1 && confQ2;
     const saldoManual = cacheSaldoAnteriorManual !== null ? cacheSaldoAnteriorManual : null;
     const linhas = [];
 
@@ -546,6 +548,8 @@ function _assinarEstadoPontoAtual() {
     return JSON.stringify({
         idFunc,
         mesAno,
+        confQ1,
+        confQ2,
         conferido,
         saldoManual,
         linhas
@@ -3594,6 +3598,15 @@ function selecionarFuncionarioPonto() {
     // Mantido por compatibilidade legado, mas não será mais usado no Ponto Fase 3.
 }
 
+function _pontoTemDadosDias(dbStatus, diaInicio, diaFim) {
+    if (!dbStatus) return false;
+    for (let d = diaInicio; d <= diaFim; d++) {
+        const dia = dbStatus[d];
+        if (dia && (dia.e1 || dia.s1 || dia.e2 || dia.s2)) return true;
+    }
+    return false;
+}
+
 // Função auxiliar que calcula o status de um card a partir dos dados do banco
 // Cache de fins de semana por mês — evita moment() em loop por funcionário
 const _fdsCache = {};
@@ -3633,9 +3646,19 @@ function _calcularStatusCard(dbStatus, mesAno, diasNoMes) {
     }
 
     let statusCss, statusText;
-    if (dbStatus && dbStatus.conferido === true) {
+    const _confQ1 = dbStatus && (dbStatus.confQ1 === true || (!dbStatus.confQ1 && !dbStatus.confQ2 && dbStatus.conferido === true));
+    const _confQ2 = dbStatus && (dbStatus.confQ2 === true || (!dbStatus.confQ1 && !dbStatus.confQ2 && dbStatus.conferido === true));
+    if (_confQ1 && _confQ2) {
         statusCss = 'ponto-card-conferido';
         statusText = '<i class="fa-solid fa-check-double"></i> Conferido';
+    } else if (_confQ1) {
+        const temDadosQ2 = _pontoTemDadosDias(dbStatus, 16, diasNoMes);
+        statusCss = 'ponto-card-conf-q1' + (temDadosQ2 ? ' ponto-card-conf-q1-com-q2' : '');
+        statusText = '<i class="fa-solid fa-check"></i> 1ª Quinzena Conferida';
+    } else if (_confQ2) {
+        const temDadosQ1 = _pontoTemDadosDias(dbStatus, 1, 15);
+        statusCss = 'ponto-card-conf-q2' + (temDadosQ1 ? ' ponto-card-conf-q2-com-q1' : '');
+        statusText = '<i class="fa-solid fa-check"></i> 2ª Quinzena Conferida';
     } else if (countFilled === 0) {
         statusCss = 'ponto-card-vazio';
         statusText = 'Vazio';
@@ -4046,8 +4069,11 @@ async function renderFolhaPonto() {
         cacheSaldoAnteriorManual = dadosSalvos.saldoAnteriorManual;
     }
 
-    // Restaura o Toggle do Cartão Conferido
-    document.getElementById('ponto-conferido-check').checked = (dadosSalvos && dadosSalvos.conferido === true);
+    // Restaura os Toggles de Conferência por Quinzena
+    const _q1Salvo = dadosSalvos && (dadosSalvos.confQ1 === true || (!dadosSalvos.confQ1 && !dadosSalvos.confQ2 && dadosSalvos.conferido === true));
+    const _q2Salvo = dadosSalvos && (dadosSalvos.confQ2 === true || (!dadosSalvos.confQ1 && !dadosSalvos.confQ2 && dadosSalvos.conferido === true));
+    document.getElementById('ponto-conferido-q1-check').checked = !!_q1Salvo;
+    document.getElementById('ponto-conferido-q2-check').checked = !!_q2Salvo;
 
     for (let d = 1; d <= diasNoMes; d++) {
         let diaStr = d.toString().padStart(2, '0');
@@ -4429,7 +4455,9 @@ async function salvarBancoAtual() {
     let payload = {
         fechamentoSaldoLiquido: saldoMensalLiquido,
         fechamentoAcumulado: cacheSaldoAnterior + saldoMensalLiquido,
-        conferido: document.getElementById('ponto-conferido-check').checked
+        confQ1: document.getElementById('ponto-conferido-q1-check').checked,
+        confQ2: document.getElementById('ponto-conferido-q2-check').checked,
+        conferido: document.getElementById('ponto-conferido-q1-check').checked && document.getElementById('ponto-conferido-q2-check').checked
     };
     if (cacheSaldoAnteriorManual !== null) {
         payload.saldoAnteriorManual = cacheSaldoAnteriorManual;
@@ -4914,10 +4942,16 @@ function toggleFolgaPonto(d) {
     calcularLinhaPonto(d);
 }
 
-function toggleCartaoConferido(isChecked) {
+function toggleCartaoConferido() {
     pontoFoiAlterado = true;
-    if (isChecked) {
-        showToast("Cartão marcado como Conferido. Lembre-se de Gravar a Folha.", "info");
+    const q1 = document.getElementById('ponto-conferido-q1-check').checked;
+    const q2 = document.getElementById('ponto-conferido-q2-check').checked;
+    if (q1 && q2) {
+        showToast("Folha completa marcada como Conferida. Lembre-se de Gravar a Folha.", "info");
+    } else if (q1) {
+        showToast("1ª Quinzena marcada como conferida. Lembre-se de Gravar a Folha.", "info");
+    } else if (q2) {
+        showToast("2ª Quinzena marcada como conferida. Lembre-se de Gravar a Folha.", "info");
     }
 }
 

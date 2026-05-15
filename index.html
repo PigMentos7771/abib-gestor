@@ -700,13 +700,20 @@
                         <div class="filters" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
                             <div id="ponto-acoes-container"
                                 style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-                                <div style="display: flex; align-items: center; gap: 10px; margin-right: 15px;">
-                                    <span style="font-weight: 600; color: var(--text-main);">Folha Conferida</span>
-                                    <label class="toggle-switch">
-                                        <input type="checkbox" id="ponto-conferido-check"
-                                            onchange="toggleCartaoConferido(this.checked)">
+                                <div style="display: flex; align-items: center; gap: 8px; margin-right: 15px; flex-wrap: wrap;">
+                                    <span style="font-weight: 600; color: var(--text-main); font-size: 0.88rem;">Conferido:</span>
+                                    <label class="toggle-switch" title="1ª Quinzena Conferida">
+                                        <input type="checkbox" id="ponto-conferido-q1-check"
+                                            onchange="toggleCartaoConferido()">
                                         <span class="slider"></span>
                                     </label>
+                                    <span style="font-size: 0.82rem; color: var(--text-light);">1ª Q.</span>
+                                    <label class="toggle-switch" title="2ª Quinzena Conferida" style="margin-left: 4px;">
+                                        <input type="checkbox" id="ponto-conferido-q2-check"
+                                            onchange="toggleCartaoConferido()">
+                                        <span class="slider"></span>
+                                    </label>
+                                    <span style="font-size: 0.82rem; color: var(--text-light);">2ª Q.</span>
                                 </div>
                                 <button class="btn-primary" onclick="salvarBancoAtual()" style="min-width: 120px;">
                                     <i class="fa-solid fa-save"></i> Gravar Folha
